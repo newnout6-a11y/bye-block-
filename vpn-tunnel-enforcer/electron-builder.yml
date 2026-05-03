@@ -1,0 +1,32 @@
+appId: com.vpntunnelenforcer.app
+productName: VPN Tunnel Enforcer
+directories:
+  output: dist
+electronDist: node_modules/electron/dist
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+  requestedExecutionLevel: requireAdministrator
+nsis:
+  artifactName: VPN-Tunnel-Enforcer-Setup-${version}.${ext}
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: VPN Tunnel Enforcer
+portable:
+  artifactName: VPN-Tunnel-Enforcer-${version}.${ext}
+extraResources:
+  - from: resources/sing-box.exe
+    to: sing-box.exe
+  - from: resources/wintun.dll
+    to: wintun.dll
+  - from: resources/icon.ico
+    to: icon.ico
+files:
+  - out/**/*
+  - package.json
+asar: true

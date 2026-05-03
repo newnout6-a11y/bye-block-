@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: theme('colors.surface.lighter');
+  }
+  body {
+    @apply bg-surface text-gray-100 font-sans antialiased;
+    -webkit-app-region: no-drag;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-lighter rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+}
+
+@layer components {
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+  .card {
+    @apply bg-surface-light rounded-lg border border-surface-lighter/50 p-5 transition-all duration-200;
+  }
+  .card:hover {
+    @apply border-accent/30;
+  }
+  .btn-primary {
+    @apply bg-accent hover:bg-accent/90 text-white font-medium px-5 py-2.5 rounded-md transition-all duration-200 active:scale-95;
+  }
+  .btn-secondary {
+    @apply bg-surface-lighter hover:bg-gray-600 text-gray-200 font-medium px-5 py-2.5 rounded-md transition-all duration-200 active:scale-95;
+  }
+  .btn-danger {
+    @apply bg-danger/20 hover:bg-danger/30 text-danger font-medium px-5 py-2.5 rounded-md transition-all duration-200 active:scale-95;
+  }
+}

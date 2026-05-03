@@ -8,6 +8,7 @@ import { app } from 'electron'
 import sudo from 'sudo-prompt'
 import { execElevated, isProcessElevated } from './admin'
 import { logEvent } from './appLogger'
+import { rollbackTunNetworkBaselineIfApplied } from './systemNetwork'
 
 const exec = promisify(execCb)
 
@@ -17,6 +18,7 @@ export interface TunStatus {
   proxyType: 'socks5' | 'http' | null
   pid: number | null
   warning?: string | null
+  proxyReachable?: boolean
 }
 
 interface StartOptions {
@@ -24,7 +26,7 @@ interface StartOptions {
   proxyType?: 'socks5' | 'http'
 }
 
-let currentStatus: TunStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null }
+let currentStatus: TunStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
 let statusCallbacks: ((status: string) => void)[] = []
 let watchdogTimer: ReturnType<typeof setInterval> | null = null
 let watchdogFailures = 0
@@ -142,10 +144,11 @@ export function generateSingboxConfig(
     dns: {
       // TCP/TLS DNS is deliberately detoured through proxy-out so DNS cannot fall back
       // to the physical adapter while the full-tunnel route is active.
+      // No local resolver is registered — if proxy-out is unreachable, DNS must fail
+      // closed instead of silently falling back to the ISP resolver via the physical NIC.
       servers: [
         { type: 'tls', tag: 'dns-remote', server: '1.1.1.1', detour: 'proxy-out' },
-        { type: 'tls', tag: 'dns-backup', server: '8.8.8.8', detour: 'proxy-out' },
-        { type: 'local', tag: 'dns-local' }
+        { type: 'tls', tag: 'dns-backup', server: '8.8.8.8', detour: 'proxy-out' }
       ],
       strategy: 'prefer_ipv4'
     },
@@ -218,12 +221,25 @@ async function killOwnedRuntimeProcesses(): Promise<void> {
   await killRuntimeProcess('sing-box.exe', getBundledResource('sing-box.exe'))
 }
 
-async function stopRuntimeAfterWatchdog(reason: string): Promise<void> {
-  logEvent('error', 'tun-watchdog', reason)
-  stopProxyWatchdog()
-  await killOwnedRuntimeProcesses()
-  currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null }
-  notifyStatus('stopped')
+// Kill-switch behavior: when the upstream proxy is unreachable, we INTENTIONALLY do NOT
+// tear down sing-box. The TUN keeps strict_route + final=proxy-out, so traffic just
+// times out at the dead proxy instead of leaking out the physical adapter. The watchdog
+// only annotates the status so the UI can warn the user that traffic is currently
+// blocked; it never kills the runtime on its own.
+function markProxyUnreachable(reason: string): void {
+  if (!currentStatus.running) return
+  if (currentStatus.proxyReachable === false) return
+  logEvent('warn', 'tun-watchdog', reason)
+  currentStatus = { ...currentStatus, proxyReachable: false, warning: reason }
+  notifyStatus('proxy-down')
+}
+
+function markProxyRecovered(): void {
+  if (!currentStatus.running) return
+  if (currentStatus.proxyReachable !== false) return
+  logEvent('info', 'tun-watchdog', 'upstream proxy recovered, traffic flowing again')
+  currentStatus = { ...currentStatus, proxyReachable: true, warning: null }
+  notifyStatus('running')
 }
 
 function stopProxyWatchdog() {
@@ -253,15 +269,19 @@ function startProxyWatchdog(proxyAddr: string) {
 
     const alive = await probeTcp(parsed.host, parsed.port, 1500)
     if (alive) {
-      if (watchdogFailures > 0) logEvent('info', 'tun-watchdog', 'proxy recovered', { proxyAddr })
       watchdogFailures = 0
+      markProxyRecovered()
       return
     }
 
     watchdogFailures += 1
-    logEvent('warn', 'tun-watchdog', `upstream proxy probe failed (${watchdogFailures}/3)`, { proxyAddr })
     if (watchdogFailures >= 3) {
-      await stopRuntimeAfterWatchdog(`upstream proxy ${proxyAddr} is down; TUN stopped to restore normal routing`)
+      // Kill-switch: do NOT stop sing-box. The TUN keeps blocking traffic until proxy returns.
+      markProxyUnreachable(
+        `Прокси ${proxyAddr} не отвечает. Трафик блокируется в TUN, чтобы не утекать мимо VPN.`
+      )
+    } else {
+      logEvent('warn', 'tun-watchdog', `upstream proxy probe failed (${watchdogFailures}/3)`, { proxyAddr })
     }
   }, 5000)
 }
@@ -467,8 +487,9 @@ export const tunController = {
 
       const onExit = (error?: Error | null, stderr?: string) => {
         // This fires only when sing-box exits (or UAC is denied).
+        const wasRunning = currentStatus.running
         stopProxyWatchdog()
-        currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null }
+        currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
         notifyStatus('stopped')
         if (!resolved) {
           const msg = error?.message || (stderr ? String(stderr) : 'sing-box не запустился')
@@ -478,6 +499,13 @@ export const tunController = {
           logEvent(error ? 'error' : 'warn', 'tun', 'sing-box process exited', { error: error?.message, stderr })
         } else {
           logEvent('info', 'tun', 'sing-box process exited')
+        }
+        // sing-box died unexpectedly while we believed TUN was up. Restore proxy settings
+        // so we don't leave the user with both no-VPN and no-original-proxy-config.
+        if (wasRunning) {
+          rollbackTunNetworkBaselineIfApplied('sing-box exited').catch(err =>
+            logEvent('warn', 'tun', 'baseline auto-rollback after sing-box exit failed', err)
+          )
         }
       }
 
@@ -497,7 +525,7 @@ export const tunController = {
         const running = await isSingboxRunning()
         if (running) {
           clearInterval(poller)
-          currentStatus = { running: true, proxyAddr, proxyType, pid: null, warning }
+          currentStatus = { running: true, proxyAddr, proxyType, pid: null, warning, proxyReachable: true }
           startProxyWatchdog(proxyAddr)
           logEvent('info', 'tun', 'TUN started', { proxyAddr, proxyType, warning })
           notifyStatus('running')
@@ -521,9 +549,17 @@ export const tunController = {
       stopProxyWatchdog()
       await killOwnedRuntimeProcesses()
 
-      currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null }
+      currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
       logEvent('info', 'tun', 'TUN stopped')
       notifyStatus('stopped')
+
+      // If we modified HKCU/HKLM proxy settings before starting the TUN, restore them now.
+      // Without this, stopping the TUN leaves the user without VPN AND without the proxy
+      // settings they had before — the exact "breaks global settings" failure mode.
+      await rollbackTunNetworkBaselineIfApplied('TUN stopped').catch(err =>
+        logEvent('warn', 'tun', 'baseline auto-rollback after stop failed', err)
+      )
+
       return { success: true }
     } catch (err: any) {
       logEvent('error', 'tun', 'failed to stop TUN', err)

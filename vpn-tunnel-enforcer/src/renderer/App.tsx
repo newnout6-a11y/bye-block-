@@ -75,9 +75,16 @@ export default function App() {
 
     const unsubTun = window.electronAPI.onTunStatusChanged((status) => {
       const store = useAppStore.getState()
-      store.setTunRunning(status === 'running')
-      if (status !== 'running' && store.mode === 'hard') store.setMode('off')
-      addLog('info', `Статус TUN: ${status}`)
+      // 'proxy-down' means TUN is still up but upstream proxy is unreachable — we keep
+      // tunRunning=true so the kill-switch state is reflected (traffic blocked, not leaked).
+      const tunUp = status === 'running' || status === 'proxy-down'
+      store.setTunRunning(tunUp)
+      if (!tunUp && store.mode === 'hard') store.setMode('off')
+      if (status === 'proxy-down') {
+        addLog('warn', 'Upstream proxy не отвечает — трафик заблокирован в TUN (kill-switch)')
+      } else {
+        addLog('info', `Статус TUN: ${status}`)
+      }
     })
 
     return () => {

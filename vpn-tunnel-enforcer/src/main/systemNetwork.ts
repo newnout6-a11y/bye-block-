@@ -1,9 +1,10 @@
 import { app } from 'electron'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readFile, writeFile, unlink } from 'fs/promises'
 import { join } from 'path'
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
 import { execElevated } from './admin'
+import { logEvent } from './appLogger'
 
 const exec = promisify(execCb)
 
@@ -11,6 +12,12 @@ export interface SystemNetworkResult {
   success: boolean
   message: string
   details?: string
+}
+
+// Presence of the manifest file is the source of truth that baseline is currently applied.
+// Rollback removes the manifest. Used by tunController/main to drive idempotent auto-rollback.
+export async function isBaselineApplied(): Promise<boolean> {
+  return (await readManifest()) !== null
 }
 
 interface NetworkBackupManifest {
@@ -98,6 +105,14 @@ async function readManifest(): Promise<NetworkBackupManifest | null> {
   }
 }
 
+async function clearManifest(): Promise<void> {
+  try {
+    await unlink(manifestPath())
+  } catch {
+    // Already gone — fine.
+  }
+}
+
 function clearCurrentProcessProxyEnv() {
   for (const key of PROXY_ENV_KEYS) {
     delete process.env[key]
@@ -175,6 +190,7 @@ export async function rollbackTunNetworkBaseline(): Promise<SystemNetworkResult>
       await execElevated(`reg import "${manifest.hklmConnectionsBackup}"`, { timeout: 15000 })
     }
     await notifyWinInetSettingsChanged()
+    await clearManifest()
     return {
       success: true,
       message: 'Сетевые настройки восстановлены из backup',
@@ -187,4 +203,23 @@ export async function rollbackTunNetworkBaseline(): Promise<SystemNetworkResult>
       details: err.stderr || err.stdout
     }
   }
+}
+
+// Best-effort auto-rollback used on TUN stop, app exit, and crash recovery.
+// Safe to call when baseline is not applied (returns success with skipped=true).
+export async function rollbackTunNetworkBaselineIfApplied(
+  reason: string
+): Promise<SystemNetworkResult & { skipped?: boolean }> {
+  if (process.platform !== 'win32') {
+    return { success: true, skipped: true, message: 'Rollback недоступен (не Windows)' }
+  }
+  if (!(await isBaselineApplied())) {
+    return { success: true, skipped: true, message: 'Baseline не был применён — откатывать нечего' }
+  }
+  logEvent('info', 'system-network', `auto-rollback baseline: ${reason}`)
+  const result = await rollbackTunNetworkBaseline()
+  if (!result.success) {
+    logEvent('warn', 'system-network', 'auto-rollback failed', result)
+  }
+  return result
 }

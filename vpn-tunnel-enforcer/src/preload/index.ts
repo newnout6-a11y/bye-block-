@@ -6,7 +6,7 @@ export interface ElectronAPI {
   startTun: (proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<{ success: boolean; error?: string; warning?: string | null; vpnIp?: string | null }>
   stopTun: () => Promise<{ success: boolean; error?: string }>
   getTunStatus: () => Promise<{ running: boolean; proxyAddr: string | null; proxyType: 'socks5' | 'http' | null; pid: number | null; warning?: string | null }>
-  applyAutoconfig: (targets: string[], proxyAddr: string) => Promise<Record<string, boolean>>
+  applyAutoconfig: (targets: string[], proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<Record<string, boolean>>
   rollbackAutoconfig: (targets: string[]) => Promise<Record<string, boolean>>
   getAutoconfigStatus: () => Promise<any[]>
   getSettings: () => Promise<any>
@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startTun: (proxyAddr: string, proxyType?: 'socks5' | 'http') => ipcRenderer.invoke('start-tun', proxyAddr, proxyType),
   stopTun: () => ipcRenderer.invoke('stop-tun'),
   getTunStatus: () => ipcRenderer.invoke('get-tun-status'),
-  applyAutoconfig: (targets: string[], proxyAddr: string) => ipcRenderer.invoke('apply-autoconfig', targets, proxyAddr),
+  applyAutoconfig: (targets: string[], proxyAddr: string, proxyType?: 'socks5' | 'http') => ipcRenderer.invoke('apply-autoconfig', targets, proxyAddr, proxyType),
   rollbackAutoconfig: (targets: string[]) => ipcRenderer.invoke('rollback-autoconfig', targets),
   getAutoconfigStatus: () => ipcRenderer.invoke('get-autoconfig-status'),
   getSettings: () => ipcRenderer.invoke('get-settings'),

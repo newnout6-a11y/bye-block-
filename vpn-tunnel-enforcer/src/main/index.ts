@@ -213,8 +213,8 @@ app.whenReady().then(async () => {
     return tunController.getStatus()
   })
 
-  handleLogged('apply-autoconfig', async (_e, targets: string[], proxyAddr: string) => {
-    return autoconfig.apply(targets, proxyAddr)
+  handleLogged('apply-autoconfig', async (_e, targets: string[], proxyAddr: string, proxyType?: 'socks5' | 'http') => {
+    return autoconfig.apply(targets, proxyAddr, proxyType ?? settingsStore.get().proxyType)
   })
 
   handleLogged('rollback-autoconfig', async (_e, targets: string[]) => {

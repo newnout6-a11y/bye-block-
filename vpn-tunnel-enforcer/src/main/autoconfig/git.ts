@@ -3,14 +3,22 @@ import { promisify } from 'util'
 
 const execAsync = promisify(exec)
 
+function proxyUrl(proxyAddr: string, proxyType: 'socks5' | 'http'): string {
+  const [host, port] = proxyAddr.split(':')
+  // Git supports socks5h:// natively (curl backend). socks5h forces DNS through
+  // the proxy. Plain http://host:socksPort would attempt HTTP CONNECT against
+  // a SOCKS port and fail for every clone/fetch.
+  return proxyType === 'socks5' ? `socks5h://${host}:${port}` : `http://${host}:${port}`
+}
+
 export const git = {
   name: 'Git',
 
-  async apply(proxyAddr: string): Promise<boolean> {
-    const [host, port] = proxyAddr.split(':')
+  async apply(proxyAddr: string, proxyType: 'socks5' | 'http' = 'socks5'): Promise<boolean> {
+    const url = proxyUrl(proxyAddr, proxyType)
     try {
-      await execAsync(`git config --global http.proxy http://${host}:${port}`)
-      await execAsync(`git config --global https.proxy http://${host}:${port}`)
+      await execAsync(`git config --global http.proxy ${url}`)
+      await execAsync(`git config --global https.proxy ${url}`)
       return true
     } catch {
       return false

@@ -93,6 +93,12 @@ export function Apps() {
         </div>
       )}
 
+      <div className="bg-warning/10 border border-warning/30 rounded-lg p-3 text-xs text-warning/90">
+        Цель «Переменные окружения» делает <code className="text-warning">setx HTTP_PROXY/HTTPS_PROXY</code> на уровень
+        пользователя — это видят все новые `cmd`, `python`, `pip`, `git`, `npm`. При выходе из приложения эти переменные
+        автоматически удаляются, чтобы не ломать инструменты после закрытия.
+      </div>
+
       {/* Target list */}
       <div className="space-y-2">
         {targets.map(target => (

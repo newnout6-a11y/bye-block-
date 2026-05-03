@@ -151,8 +151,11 @@ export function Settings() {
         </div>
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-gray-200">Авто baseline сети для TUN</p>
-            <p className="text-xs text-gray-500">Перед Hard mode сбрасывать WinHTTP/User/PAC/env proxy с backup</p>
+            <p className="text-sm text-gray-200">Авто baseline сети для TUN <span className="text-warning">(агрессивно)</span></p>
+            <p className="text-xs text-gray-500">
+              Перед Hard mode сбрасывать WinHTTP/User/PAC/env proxy с backup. По умолчанию выключено: TUN ловит трафик и без этого.
+              Откатывается автоматически при остановке TUN, выходе из приложения и при крахе.
+            </p>
           </div>
           <button
             onClick={() => updateSettings({ autoNetworkBaseline: !settings.autoNetworkBaseline })}

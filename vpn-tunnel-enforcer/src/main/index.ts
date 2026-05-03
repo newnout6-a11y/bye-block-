@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, Tray, shell, type IpcMainInvokeEvent } from 'electron'
+import { exec as execCb } from 'child_process'
+import { promisify } from 'util'
 import { join } from 'path'
 import { happDetector } from './happDetector'
 import { tunController } from './tunController'
@@ -10,16 +12,24 @@ import { runLeakCheck } from './leakDiagnostics'
 import { runStoreRepair, type StoreRepairAction } from './storeRepair'
 import { runStoreDiagnostics } from './storeDiagnostics'
 import { applyLocationPrivacy, getLocationPrivacyStatus, rollbackLocationPrivacy } from './locationPrivacy'
-import { applyTunNetworkBaseline, rollbackTunNetworkBaseline } from './systemNetwork'
+import {
+  applyTunNetworkBaseline,
+  isBaselineApplied,
+  rollbackTunNetworkBaseline,
+  rollbackTunNetworkBaselineIfApplied
+} from './systemNetwork'
 import { relaunchElevatedIfNeeded } from './admin'
 import { clearAppLog, getFullLogs, logEvent, openLogFolder, type AppLogLevel } from './appLogger'
 import { runSystemDiagnostics } from './systemDiagnostics'
 import { getRoutingPlan } from './connectionPlanner'
 import { runAutoPilot } from './autoPilot'
 
+const exec = promisify(execCb)
+
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let shutdownInProgress = false
 
 function getIconPath() {
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -99,6 +109,31 @@ function handleLogged<T>(
   })
 }
 
+// Crash recovery: if a previous session applied the network baseline but never rolled it
+// back (process killed, BSOD, force-quit), the user's HKCU\Internet Settings + env proxy
+// vars stay wiped forever. On startup, if no sing-box is left running, restore them.
+async function recoverStaleBaseline(): Promise<void> {
+  if (process.platform !== 'win32') return
+  if (!(await isBaselineApplied())) return
+  try {
+    const { stdout } = await exec('tasklist /FI "IMAGENAME eq vpnte-sing-box.exe" /FO CSV /NH', {
+      windowsHide: true,
+      timeout: 5000,
+      encoding: 'utf8'
+    })
+    if (String(stdout).toLowerCase().includes('vpnte-sing-box.exe')) {
+      logEvent('info', 'app', 'baseline marker found and sing-box is still running — keeping baseline')
+      return
+    }
+  } catch {
+    // fall through to rollback
+  }
+  logEvent('warn', 'app', 'stale baseline detected on startup (sing-box not running) — rolling back')
+  await rollbackTunNetworkBaselineIfApplied('crash recovery on startup').catch(err =>
+    logEvent('warn', 'app', 'crash-recovery rollback failed', err)
+  )
+}
+
 app.whenReady().then(async () => {
   logEvent('info', 'app', 'application ready', {
     version: app.getVersion(),
@@ -111,6 +146,8 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+
+  await recoverStaleBaseline()
 
   const initialSettings = settingsStore.get()
   settingsStore.syncLoginItem()
@@ -146,7 +183,14 @@ app.whenReady().then(async () => {
     }
 
     const result = await tunController.start({ proxyAddr, proxyType: proxyType ?? 'socks5' })
-    if (!result.success) return result
+    if (!result.success) {
+      // TUN failed to start. If we wiped the user's proxy settings to prepare for it,
+      // restore them now so we don't leave the system worse than we found it.
+      await rollbackTunNetworkBaselineIfApplied('start-tun failed').catch(err =>
+        logEvent('warn', 'app', 'rollback after start-tun failure failed', err)
+      )
+      return result
+    }
 
     const ipInfo = await ipMonitor.getCurrentIp()
     if (ipInfo.ip) ipMonitor.setVpnIp(ipInfo.ip)
@@ -291,15 +335,54 @@ app.whenReady().then(async () => {
   })
 })
 
-app.on('before-quit', () => {
+// Coordinated shutdown: stop TUN, roll back any global system-proxy edits we made, and
+// roll back the soft-mode env-proxy autoconfig. Without this, closing the app could
+// leave the user with no VPN AND no original proxy settings — the "breaks global
+// settings" failure mode this PR addresses.
+async function performShutdownCleanup(reason: string): Promise<void> {
+  if (shutdownInProgress) return
+  shutdownInProgress = true
+  logEvent('info', 'app', `shutdown cleanup started: ${reason}`)
+
+  try {
+    if (tunController.getStatus().running) {
+      await tunController.stop()
+    }
+  } catch (err) {
+    logEvent('warn', 'app', 'tunController.stop during shutdown failed', err)
+  }
+
+  try {
+    await rollbackTunNetworkBaselineIfApplied(`shutdown: ${reason}`)
+  } catch (err) {
+    logEvent('warn', 'app', 'baseline rollback during shutdown failed', err)
+  }
+
+  try {
+    const status = await autoconfig.getStatus()
+    const envApplied = status.find(t => t.id === 'env')?.applied
+    if (envApplied) {
+      logEvent('info', 'app', 'rolling back env autoconfig (setx HTTP_PROXY) on shutdown')
+      await autoconfig.rollback(['env'])
+    }
+  } catch (err) {
+    logEvent('warn', 'app', 'env autoconfig rollback during shutdown failed', err)
+  }
+}
+
+app.on('before-quit', async (event) => {
+  if (shutdownInProgress) return
   isQuitting = true
   logEvent('info', 'app', 'before quit')
+  event.preventDefault()
+  await performShutdownCleanup('before-quit')
+  app.exit(0)
 })
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
   if (process.platform !== 'darwin') {
-    tunController.stop()
     logEvent('info', 'app', 'all windows closed')
+    await performShutdownCleanup('window-all-closed')
     app.quit()
   }
 })

@@ -3,7 +3,7 @@ import { SocksClient } from 'socks'
 import { getRoutingPlan, type RoutingPlan, type ProxyListenerInfo } from './connectionPlanner'
 import { logEvent } from './appLogger'
 import { settingsStore } from './settings'
-import { applyTunNetworkBaseline } from './systemNetwork'
+import { applyTunNetworkBaseline, rollbackTunNetworkBaselineIfApplied } from './systemNetwork'
 import { probeTcp, tunController } from './tunController'
 
 export interface AutoPilotStep {
@@ -204,6 +204,13 @@ export async function runAutoPilot(): Promise<AutoPilotResult> {
 
   const start = await tunController.start({ proxyAddr: `${proxy.host}:${proxy.port}`, proxyType: proxy.type })
   changed = true
+  if (!start.success) {
+    // We may have applied the network baseline above; if TUN didn't come up, undo it so
+    // the user is not left with both no-VPN and no-original-proxy-config.
+    await rollbackTunNetworkBaselineIfApplied('autopilot start failed').catch(err =>
+      logEvent('warn', 'autopilot', 'baseline rollback after start failure failed', err)
+    )
+  }
   steps.push({
     label: 'Включить один системный TUN',
     before: 'Внешнего TUN нет, proxy работает.',

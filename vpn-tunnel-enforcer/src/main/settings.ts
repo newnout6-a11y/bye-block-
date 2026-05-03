@@ -23,7 +23,10 @@ const defaults: AppSettings = {
   autoPilotEnabled: true,
   minimizeToTray: true,
   locationPrivacyEnabled: false,
-  autoNetworkBaseline: true
+  // Off by default — wiping HKCU\Internet Settings + WinHTTP + env proxies is destructive
+  // and not actually required for TUN to capture traffic at the routing layer. Users who
+  // need to fix UWP/Store traffic capture can opt in via Settings → "Auto baseline".
+  autoNetworkBaseline: false
 }
 
 const store = new Store<{ settings: AppSettings }>({
@@ -42,7 +45,7 @@ function normalizeSettings(input: Partial<AppSettings> | undefined): AppSettings
     autoPilotEnabled: merged.autoPilotEnabled !== false,
     minimizeToTray: Boolean(merged.minimizeToTray),
     locationPrivacyEnabled: Boolean(merged.locationPrivacyEnabled),
-    autoNetworkBaseline: merged.autoNetworkBaseline !== false
+    autoNetworkBaseline: Boolean(merged.autoNetworkBaseline)
   }
 }
 

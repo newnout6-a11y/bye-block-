@@ -16,7 +16,7 @@ declare global {
       startTun: (proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<{ success: boolean; error?: string; warning?: string | null; vpnIp?: string | null }>
       stopTun: () => Promise<{ success: boolean; error?: string }>
       getTunStatus: () => Promise<{ running: boolean; proxyAddr: string | null; proxyType: 'socks5' | 'http' | null; pid: number | null; warning?: string | null }>
-      applyAutoconfig: (targets: string[], proxyAddr: string) => Promise<Record<string, boolean>>
+      applyAutoconfig: (targets: string[], proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<Record<string, boolean>>
       rollbackAutoconfig: (targets: string[]) => Promise<Record<string, boolean>>
       getAutoconfigStatus: () => Promise<any[]>
       getSettings: () => Promise<AppSettings>

@@ -11,7 +11,7 @@ export interface AutoconfigTarget {
 
 const targets: Record<string, {
   name: string
-  apply: (proxyAddr: string) => Promise<boolean>
+  apply: (proxyAddr: string, proxyType: 'socks5' | 'http') => Promise<boolean>
   rollback: () => Promise<boolean>
   isApplied: () => Promise<boolean>
 }> = {
@@ -22,13 +22,17 @@ const targets: Record<string, {
 }
 
 export const autoconfig = {
-  async apply(targetIds: string[], proxyAddr: string): Promise<Record<string, boolean>> {
+  async apply(
+    targetIds: string[],
+    proxyAddr: string,
+    proxyType: 'socks5' | 'http' = 'socks5'
+  ): Promise<Record<string, boolean>> {
     const results: Record<string, boolean> = {}
     for (const id of targetIds) {
       const target = targets[id]
       if (target) {
         try {
-          results[id] = await target.apply(proxyAddr)
+          results[id] = await target.apply(proxyAddr, proxyType)
         } catch {
           results[id] = false
         }

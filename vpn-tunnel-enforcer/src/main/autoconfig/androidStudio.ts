@@ -29,9 +29,10 @@ async function findAndroidStudioDirs(): Promise<string[]> {
 export const androidStudio = {
   name: 'Android Studio',
 
-  async apply(proxyAddr: string): Promise<boolean> {
+  async apply(proxyAddr: string, proxyType: 'socks5' | 'http' = 'socks5'): Promise<boolean> {
     const [host, portStr] = proxyAddr.split(':')
     const port = portStr
+    const isSocks = proxyType === 'socks5'
     const dirs = await findAndroidStudioDirs()
 
     // If no config dir exists yet (first run), create one for the newest-looking folder
@@ -61,7 +62,7 @@ export const androidStudio = {
     <option name="USE_HTTP_PROXY" value="true" />
     <option name="PROXY_HOST" value="${host}" />
     <option name="PROXY_PORT" value="${port}" />
-    <option name="PROXY_TYPE_IS_SOCKS" value="true" />
+    <option name="PROXY_TYPE_IS_SOCKS" value="${isSocks}" />
   </component>`
 
         if (/component\s+name="HttpConfigurable"/.test(content)) {
@@ -88,7 +89,9 @@ export const androidStudio = {
         }
 
         const marker = '# VPN-Tunnel-Enforcer'
-        const proxyBlock = `${marker}\n-DsocksProxyHost=${host}\n-DsocksProxyPort=${port}\n-Dhttp.nonProxyHosts=localhost|127.0.0.1\n# /VPN-Tunnel-Enforcer\n`
+        const proxyBlock = isSocks
+          ? `${marker}\n-DsocksProxyHost=${host}\n-DsocksProxyPort=${port}\n-Dhttp.nonProxyHosts=localhost|127.0.0.1\n# /VPN-Tunnel-Enforcer\n`
+          : `${marker}\n-Dhttp.proxyHost=${host}\n-Dhttp.proxyPort=${port}\n-Dhttps.proxyHost=${host}\n-Dhttps.proxyPort=${port}\n-Dhttp.nonProxyHosts=localhost|127.0.0.1\n# /VPN-Tunnel-Enforcer\n`
 
         if (content.includes(marker)) {
           content = content.replace(/# VPN-Tunnel-Enforcer[\s\S]*?# \/VPN-Tunnel-Enforcer\n?/, proxyBlock)

@@ -35,7 +35,8 @@ export function Apps() {
     addLog('info', `Применение настроек: ${enabledIds.join(', ')}`)
 
     try {
-      const results = await window.electronAPI.applyAutoconfig(enabledIds, proxyAddr)
+      const proxyType = proxy?.type ?? settings.proxyType
+      const results = await window.electronAPI.applyAutoconfig(enabledIds, proxyAddr, proxyType)
       const updatedTargets = targets.map(t => ({
         ...t,
         applied: results[t.id] ?? t.applied
@@ -94,9 +95,11 @@ export function Apps() {
       )}
 
       <div className="bg-warning/10 border border-warning/30 rounded-lg p-3 text-xs text-warning/90">
-        Цель «Переменные окружения» делает <code className="text-warning">setx HTTP_PROXY/HTTPS_PROXY</code> на уровень
-        пользователя — это видят все новые `cmd`, `python`, `pip`, `git`, `npm`. При выходе из приложения эти переменные
-        автоматически удаляются, чтобы не ломать инструменты после закрытия.
+        Цель «Переменные окружения» делает <code className="text-warning">setx HTTP_PROXY/HTTPS_PROXY/ALL_PROXY</code> на
+        уровень пользователя — это видят все новые `cmd`, `python`, `pip`, `git`, `npm`. Для SOCKS5-прокси адрес
+        записывается как <code className="text-warning">socks5h://host:port</code>, для HTTP — как
+        <code className="text-warning">http://host:port</code>, чтобы curl/pip/git ходили через правильный протокол.
+        При выходе из приложения эти переменные автоматически удаляются, чтобы не ломать инструменты после закрытия.
       </div>
 
       {/* Target list */}

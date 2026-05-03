@@ -120,10 +120,16 @@ export function generateSingboxConfig(
   const { host, port } = parseProxyAddress(proxyAddr)
   const proxyCoreProcesses = uniqueProcessNames([...PROXY_CORE_PROCESS_NAMES, ...directProcessNames])
 
+  // domain_strategy: 'prefer_ipv4' on the outbound is belt-and-suspenders.
+  // Our DNS already resolves with prefer_ipv4 (see dns.strategy below), but
+  // when sing-box has to re-resolve a sniffed SNI domain it falls back to
+  // default_domain_resolver — telling the outbound to also prefer IPv4 keeps
+  // a SOCKS5/HTTP proxy that has no IPv6 upstream from blackholing AAAA-only
+  // destinations.
   const proxyOutbound =
     proxyType === 'http'
-      ? { type: 'http', tag: 'proxy-out', server: host, server_port: port }
-      : { type: 'socks', tag: 'proxy-out', version: '5', server: host, server_port: port }
+      ? { type: 'http', tag: 'proxy-out', server: host, server_port: port, domain_strategy: 'prefer_ipv4' }
+      : { type: 'socks', tag: 'proxy-out', version: '5', server: host, server_port: port, domain_strategy: 'prefer_ipv4' }
 
   const logPath = join(getTunRuntimeDir(), 'sing-box.log').replace(/\\/g, '/')
   const privateRanges = [
@@ -178,7 +184,14 @@ export function generateSingboxConfig(
         },
         { action: 'sniff' },
         { protocol: 'dns', action: 'hijack-dns' },
-        { ip_cidr: privateRanges, outbound: 'direct-out' }
+        { ip_cidr: privateRanges, outbound: 'direct-out' },
+        // HTTP proxy outbound has no UDP transport at all, so every UDP packet
+        // (QUIC/HTTP3, gaming, raw DNS that escaped hijack) would silently time
+        // out. Explicitly block UDP/443 so browsers fail fast on QUIC and fall
+        // back to TCP TLS instead of waiting for QUIC to time out on each load.
+        ...(proxyType === 'http'
+          ? [{ network: 'udp', port: 443, outbound: 'block-out' }]
+          : [])
       ],
       final: 'proxy-out',
       auto_detect_interface: true,

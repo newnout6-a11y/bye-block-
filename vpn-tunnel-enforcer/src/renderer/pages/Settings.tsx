@@ -1,5 +1,5 @@
 import { useAppStore } from '../store'
-import { Bell, FileArchive, FolderOpen, Loader2, Lock, RefreshCw, Save, Settings2, ShieldCheck, Wand2 } from 'lucide-react'
+import { Bell, FileArchive, FolderOpen, Loader2, Lock, Network, RefreshCw, Save, Settings2, ShieldCheck, Wand2 } from 'lucide-react'
 import { ReactNode, useState } from 'react'
 
 interface ToggleRowProps {
@@ -138,6 +138,21 @@ export function Settings() {
           }
           checked={settings.firewallKillSwitch}
           onChange={(next) => updateSettings({ firewallKillSwitch: next })}
+        />
+
+        <ToggleRow
+          icon={<Network className="w-4 h-4 text-success" />}
+          title={<>Жёсткая блокировка адаптеров <span className="text-success">(рекомендуется)</span></>}
+          description={
+            <>
+              На всех физических адаптерах (Wi-Fi, Ethernet) пока работает защита: выключаем
+              IPv6 и форсируем DNS на TUN. Это закрывает утечки, которые kill-switch одного файрвола
+              не ловит — например, браузеры с собственным DoH (Yandex Browser) или приложения,
+              предпочитающие IPv6-маршрут физического адаптера. Откатывается при остановке.
+            </>
+          }
+          checked={settings.strictAdapterLockdown}
+          onChange={(next) => updateSettings({ strictAdapterLockdown: next })}
         />
 
         <ToggleRow

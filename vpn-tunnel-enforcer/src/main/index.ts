@@ -23,6 +23,10 @@ import {
   isKillSwitchActive,
   recoverStaleKillSwitch
 } from './firewallKillSwitch'
+import {
+  isPhysicalAdapterLockdownApplied,
+  rollbackPhysicalAdapterLockdownIfApplied
+} from './physicalAdapterLockdown'
 import { relaunchElevatedIfNeeded } from './admin'
 import { clearAppLog, getFullLogs, logEvent, openLogFolder, type AppLogLevel } from './appLogger'
 import { runSystemDiagnostics } from './systemDiagnostics'
@@ -37,6 +41,53 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let shutdownInProgress = false
+
+// Global guards against uncaught exceptions / rejections in the main process.
+// Without these, a stray ECONNRESET on a stale TCP socket (axios connection
+// dropped mid-stream, telemetry probe killed by the firewall, etc.) shows the
+// big white "A JavaScript error occurred in the main process" modal and
+// effectively wedges the app — even though the error is recoverable. Here we
+// just log it and keep going. We deliberately do NOT swallow the error
+// silently: it goes through `logEvent` so it shows up in app log + diagnostics
+// ZIP, and it's surfaced to the renderer so the user can see "что-то пошло не
+// так" without losing the whole app.
+function installCrashGuards(): void {
+  // Common, mostly-recoverable network-layer errors that shouldn't crash the
+  // app even once. ECONNRESET happens when the peer (proxy/AV/firewall) tears
+  // down a half-open TCP socket. EPIPE is similar for write side. ENOTFOUND /
+  // EAI_AGAIN come from DNS while TUN is restarting.
+  const benignNetCodes = new Set(['ECONNRESET', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED'])
+
+  process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
+    const isBenignNet = err && err.code !== undefined && benignNetCodes.has(err.code)
+    logEvent(isBenignNet ? 'warn' : 'error', 'app', 'uncaughtException — keeping app alive', {
+      code: err?.code,
+      message: err?.message,
+      stack: err?.stack
+    })
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        mainWindow.webContents.send('main-error', {
+          code: err?.code ?? 'UNKNOWN',
+          message: err?.message ?? String(err)
+        })
+      } catch {
+        // If even the IPC send throws, swallow it — there's nothing meaningful to do.
+      }
+    }
+  })
+
+  process.on('unhandledRejection', (reason: any) => {
+    const code = reason?.code
+    const isBenignNet = typeof code === 'string' && benignNetCodes.has(code)
+    logEvent(isBenignNet ? 'warn' : 'error', 'app', 'unhandledRejection — keeping app alive', {
+      code,
+      message: reason?.message ?? String(reason),
+      stack: reason?.stack
+    })
+  })
+}
+installCrashGuards()
 
 function getIconPath() {
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -168,6 +219,32 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Same crash-recovery story for the physical-adapter lockdown: if a previous
+  // run left IPv6 disabled / DNS overridden on real adapters, the user is now
+  // looking at a half-broken network and there's no sing-box to enforce
+  // anything. Roll back to whatever we snapshotted.
+  if (await isPhysicalAdapterLockdownApplied()) {
+    let singboxRunning = false
+    try {
+      const { stdout } = await exec('tasklist /FI "IMAGENAME eq vpnte-sing-box.exe" /FO CSV /NH', {
+        windowsHide: true,
+        timeout: 5000,
+        encoding: 'utf8'
+      })
+      singboxRunning = String(stdout).toLowerCase().includes('vpnte-sing-box.exe')
+    } catch {
+      // If tasklist fails we assume sing-box is not running and roll back.
+    }
+    if (!singboxRunning) {
+      logEvent('warn', 'phys-lockdown', 'recovering stale adapter lockdown — sing-box not running')
+      try {
+        await rollbackPhysicalAdapterLockdownIfApplied('startup recovery — sing-box not running')
+      } catch (err) {
+        logEvent('warn', 'phys-lockdown', 'startup rollback failed', err)
+      }
+    }
+  }
+
   const initialSettings = settingsStore.get()
   settingsStore.syncLoginItem()
   ipMonitor.setCheckInterval(initialSettings.checkInterval)
@@ -204,7 +281,8 @@ app.whenReady().then(async () => {
     const result = await tunController.start({
       proxyAddr,
       proxyType: proxyType ?? 'socks5',
-      enableFirewallKillSwitch: settingsStore.get().firewallKillSwitch
+      enableFirewallKillSwitch: settingsStore.get().firewallKillSwitch,
+      enableAdapterLockdown: settingsStore.get().strictAdapterLockdown
     })
     if (!result.success) {
       // TUN failed to start. If we wiped the user's proxy settings to prepare for it,
@@ -407,6 +485,15 @@ async function performShutdownCleanup(reason: string): Promise<void> {
     await disableKillSwitchIfActive(`shutdown: ${reason}`)
   } catch (err) {
     logEvent('warn', 'app', 'kill-switch disable during shutdown failed', err)
+  }
+
+  try {
+    // Same for the adapter lockdown: never leave IPv6 disabled / DNS overridden
+    // across sessions. tunController.stop() already does this, but a forced
+    // shutdown path (no Stop button click) needs it as a backstop.
+    await rollbackPhysicalAdapterLockdownIfApplied(`shutdown: ${reason}`)
+  } catch (err) {
+    logEvent('warn', 'app', 'adapter lockdown rollback during shutdown failed', err)
   }
 
   try {

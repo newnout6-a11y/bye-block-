@@ -47,6 +47,7 @@ export interface AppSettings {
   firstRunComplete: boolean
   autoRestartOnCrash: boolean
   desktopNotifications: boolean
+  strictAdapterLockdown: boolean
 }
 
 export interface LeakCheckItem {
@@ -150,7 +151,8 @@ export const useAppStore = create<AppState>((set) => ({
     advancedMode: false,
     firstRunComplete: false,
     autoRestartOnCrash: true,
-    desktopNotifications: true
+    desktopNotifications: true,
+    strictAdapterLockdown: true
   },
 
   setMode: (mode) => set({ mode }),

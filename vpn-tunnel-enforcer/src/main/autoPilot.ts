@@ -202,7 +202,11 @@ export async function runAutoPilot(): Promise<AutoPilotResult> {
     })
   }
 
-  const start = await tunController.start({ proxyAddr: `${proxy.host}:${proxy.port}`, proxyType: proxy.type })
+  const start = await tunController.start({
+    proxyAddr: `${proxy.host}:${proxy.port}`,
+    proxyType: proxy.type,
+    enableFirewallKillSwitch: settingsStore.get().firewallKillSwitch
+  })
   changed = true
   if (!start.success) {
     // We may have applied the network baseline above; if TUN didn't come up, undo it so

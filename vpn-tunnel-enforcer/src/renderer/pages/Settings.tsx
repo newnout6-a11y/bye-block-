@@ -168,6 +168,26 @@ export function Settings() {
             }`} />
           </button>
         </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-200">Firewall kill-switch <span className="text-success">(рекомендуется)</span></p>
+            <p className="text-xs text-gray-500">
+              Перед стартом TUN ставит правила Windows Firewall, которые блокируют исходящий трафик на физических адаптерах.
+              sing-box и локальная сеть (LAN/принтеры/NAS) разрешены явно. Если sing-box упадёт или его убьёт антивирус,
+              правила остаются — трафик не утечёт мимо VPN. Снимаются при штатной остановке TUN или выходе.
+            </p>
+          </div>
+          <button
+            onClick={() => updateSettings({ firewallKillSwitch: !settings.firewallKillSwitch })}
+            className={`w-10 h-6 rounded-full transition-colors duration-200 ${
+              settings.firewallKillSwitch ? 'bg-accent' : 'bg-gray-600'
+            }`}
+          >
+            <div className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
+              settings.firewallKillSwitch ? 'translate-x-5' : 'translate-x-1'
+            }`} />
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3">

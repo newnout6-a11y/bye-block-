@@ -23,6 +23,8 @@ export interface ElectronAPI {
   clearAppLog: () => Promise<any>
   applyTunNetworkBaseline: () => Promise<any>
   rollbackTunNetworkBaseline: () => Promise<any>
+  disableFirewallKillSwitch: () => Promise<{ success: boolean; message: string }>
+  getFirewallKillSwitchStatus: () => Promise<{ active: boolean }>
   getLocationPrivacy: () => Promise<any>
   applyLocationPrivacy: () => Promise<any>
   rollbackLocationPrivacy: () => Promise<any>
@@ -55,6 +57,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearAppLog: () => ipcRenderer.invoke('clear-app-log'),
   applyTunNetworkBaseline: () => ipcRenderer.invoke('apply-tun-network-baseline'),
   rollbackTunNetworkBaseline: () => ipcRenderer.invoke('rollback-tun-network-baseline'),
+  disableFirewallKillSwitch: () => ipcRenderer.invoke('disable-firewall-kill-switch'),
+  getFirewallKillSwitchStatus: () => ipcRenderer.invoke('get-firewall-kill-switch-status'),
   getLocationPrivacy: () => ipcRenderer.invoke('get-location-privacy'),
   applyLocationPrivacy: () => ipcRenderer.invoke('apply-location-privacy'),
   rollbackLocationPrivacy: () => ipcRenderer.invoke('rollback-location-privacy'),

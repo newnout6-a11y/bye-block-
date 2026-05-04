@@ -82,8 +82,14 @@ async function curlBound(ip: string, url: string, timeoutSec = 4): Promise<{ std
 async function listPhysicalAdaptersWithIPv4(): Promise<{ alias: string; ipv4: string }[]> {
   if (process.platform !== 'win32') return []
   // Mirror the lockdown filter — keep them consistent so the leak test
-  // tests every adapter that the lockdown is responsible for.
+  // tests every adapter that the lockdown is responsible for. The UTF-8
+  // prefix is mandatory: without it the alias comes back as CP866-mojibake
+  // on Russian Windows and the alias-based curl probe would target a
+  // non-existent adapter.
   const script = `
+[Console]::OutputEncoding=[System.Text.Encoding]::UTF8
+$OutputEncoding=[System.Text.Encoding]::UTF8
+$ProgressPreference='SilentlyContinue'
 $ErrorActionPreference = 'SilentlyContinue'
 $rows = @()
 $adapters = Get-NetAdapter | Where-Object {

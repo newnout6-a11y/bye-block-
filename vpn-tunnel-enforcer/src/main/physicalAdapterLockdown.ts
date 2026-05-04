@@ -87,7 +87,21 @@ function psSingleQuote(s: string): string {
 }
 
 async function runPS(script: string, timeoutMs = 30000): Promise<string> {
-  const encoded = Buffer.from(script, 'utf-16le').toString('base64')
+  // CRITICAL: force UTF-8 output. On Russian Windows the default
+  // Console.OutputEncoding is CP866, which gives us mojibake for adapter
+  // names like "Беспроводная сеть". When we then pipe that mojibake string
+  // back into Set-DnsClientServerAddress / Disable-NetAdapterBinding as
+  // -InterfaceAlias, those cmdlets cannot find a matching adapter and the
+  // lockdown silently fails (we observed this on a real user's machine —
+  // forcedDnsTo was null and forcedIpv6Off was false because the per-adapter
+  // commands all errored out with "не удалось обнаружить соответствующие объекты").
+  // The prefix below makes both stdout encoding and pipeline encoding UTF-8
+  // so the alias survives round-tripping JSON.parse → JS string → next PS call.
+  // ProgressPreference suppresses the "Preparing modules for first use"
+  // CLIXML that otherwise pollutes stdout when stdout is redirected.
+  const utf8Prefix =
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;$OutputEncoding=[System.Text.Encoding]::UTF8;$ProgressPreference='SilentlyContinue';"
+  const encoded = Buffer.from(utf8Prefix + script, 'utf-16le').toString('base64')
   const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
   const { stdout } = await execElevated(cmd, { timeout: timeoutMs })
   return stdout.toString()

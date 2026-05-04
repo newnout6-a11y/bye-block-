@@ -92,7 +92,17 @@ async function ensureSnapshotsDir(): Promise<string> {
 async function tryPS(script: string, timeoutMs = 15000): Promise<string | { error: string }> {
   if (process.platform !== 'win32') return { error: 'platform is not Windows' }
   try {
-    const encoded = Buffer.from(script, 'utf-16le').toString('base64')
+    // Force UTF-8 output regardless of system locale. On Russian Windows the
+    // default Console.OutputEncoding is CP866 (OEM cyrillic), which gives us
+    // mojibake for adapter names like "Беспроводная сеть" and breaks downstream
+    // commands that try to use those names. The prefix below is mandatory for
+    // any PS we run that might emit non-ASCII text.
+    // Also suppress the "preparing modules for first use" progress XML which
+    // otherwise contaminates stdout when stdout is redirected and breaks
+    // ConvertTo-Json output / makes exec() think there's an error.
+    const utf8Prefix =
+      "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;$OutputEncoding=[System.Text.Encoding]::UTF8;$ProgressPreference='SilentlyContinue';"
+    const encoded = Buffer.from(utf8Prefix + script, 'utf-16le').toString('base64')
     const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
     const { stdout } = await exec(cmd, { windowsHide: true, timeout: timeoutMs, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
     return String(stdout).trim()
@@ -156,7 +166,11 @@ async function capturePlatformDumps(): Promise<Partial<SystemSnapshot>> {
     tryPS('netsh winhttp show proxy 2>&1 | Out-String'),
     tryPS("Get-NetTCPConnection -State Listen -LocalPort 10808 -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; [pscustomobject]@{Port=$_.LocalPort; LocalAddress=$_.LocalAddress; Pid=$_.OwningProcess; Process=$p.ProcessName; Path=$p.Path} } | Format-List | Out-String"),
     tryPS("Get-NetTCPConnection -State Listen -LocalPort 10809 -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; [pscustomobject]@{Port=$_.LocalPort; LocalAddress=$_.LocalAddress; Pid=$_.OwningProcess; Process=$p.ProcessName; Path=$p.Path} } | Format-List | Out-String"),
-    tryPS("Get-Process -Name 'vpnte-sing-box','sing-box' -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, Path, StartTime -AutoSize | Out-String -Width 4096")
+    // ProgressPreference=SilentlyContinue suppresses the "Preparing modules
+    // for first use" progress XML that otherwise contaminates stdout when
+    // stdout is redirected. -ErrorAction SilentlyContinue means we don't
+    // throw if the process isn't running.
+    tryPS("$ProgressPreference='SilentlyContinue';Get-Process -Name 'vpnte-sing-box','sing-box' -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, Path, StartTime -AutoSize | Out-String -Width 4096")
   ])
 
   return {

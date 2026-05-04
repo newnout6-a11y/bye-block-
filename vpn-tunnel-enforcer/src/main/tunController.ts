@@ -17,6 +17,11 @@ import {
   enableKillSwitch,
   isKillSwitchActive
 } from './firewallKillSwitch'
+import {
+  applyPhysicalAdapterLockdown,
+  isPhysicalAdapterLockdownApplied,
+  rollbackPhysicalAdapterLockdownIfApplied
+} from './physicalAdapterLockdown'
 
 const exec = promisify(execCb)
 
@@ -45,6 +50,12 @@ interface StartOptions {
   // whole point: traffic stays blocked at the firewall layer until the user
   // explicitly stops TUN or the daemon comes back up.
   enableFirewallKillSwitch?: boolean
+  // When true, also disable IPv6 + force IPv4 DNS to TUN's resolver on every
+  // physical adapter. This is more invasive than the firewall kill-switch
+  // (it modifies adapter-level network settings) but it's the only thing that
+  // catches leaks from apps that bring their own DNS-over-HTTPS or that prefer
+  // IPv6 default routes (e.g. Yandex Browser). Reverted on stop.
+  enableAdapterLockdown?: boolean
 }
 
 let currentStatus: TunStatus = {
@@ -484,6 +495,8 @@ export const tunController = {
       typeof proxyAddrOrOpts === 'string' ? 'socks5' : proxyAddrOrOpts.proxyType ?? 'socks5'
     const wantKillSwitch =
       typeof proxyAddrOrOpts === 'object' && proxyAddrOrOpts.enableFirewallKillSwitch === true
+    const wantAdapterLockdown =
+      typeof proxyAddrOrOpts === 'object' && proxyAddrOrOpts.enableAdapterLockdown === true
 
     // ---------- Pre-flight 1: detect another VPN/TUN ----------
     // We no longer abort here: Happ often exposes both a local proxy and its own TUN.
@@ -568,6 +581,31 @@ export const tunController = {
       }
     }
 
+    // Adapter lockdown: disable IPv6 + force DNS to TUN on every physical
+    // adapter. This is the only thing that catches DNS-over-HTTPS leaks (a
+    // browser that bypasses NRPT) and IPv6 default-route leaks (a browser
+    // that prefers a physical adapter's IPv6 default route over our TUN's
+    // split-default IPv6 routes). Reverted on stop (and on crash recovery).
+    let adapterLockdownEngaged = false
+    let adapterLockdownWarning: string | null = null
+    if (wantAdapterLockdown) {
+      try {
+        const lock = await applyPhysicalAdapterLockdown('172.19.0.2')
+        if (lock.applied) {
+          adapterLockdownEngaged = true
+          if (lock.warnings.length > 0) {
+            adapterLockdownWarning = `Lockdown с замечаниями: ${lock.warnings.join('; ')}`
+          }
+        } else {
+          adapterLockdownWarning = `Lockdown не применился: ${lock.warnings.join('; ') || 'нет физических адаптеров'}`
+          logEvent('warn', 'tun', 'physical adapter lockdown did not apply', lock)
+        }
+      } catch (err: any) {
+        adapterLockdownWarning = `Lockdown упал: ${err?.message ?? String(err)}`
+        logEvent('warn', 'tun', 'physical adapter lockdown threw', err)
+      }
+    }
+
     // sudo-prompt's callback fires on child exit. For a long-running daemon we:
     // 1. Fire-and-forget the sudo.exec call, using its callback to mark "stopped" on exit.
     // 2. Poll tasklist for sing-box.exe to determine if it actually started.
@@ -604,6 +642,14 @@ export const tunController = {
           if (killSwitchEngaged) {
             disableKillSwitch('sing-box never started').catch(err =>
               logEvent('warn', 'tun', 'kill-switch disable after start failure failed', err)
+            )
+          }
+          // Same for the adapter lockdown: it must always come down on a failed
+          // start, otherwise the user has IPv6 disabled + ISP DNS overridden
+          // for no reason.
+          if (adapterLockdownEngaged) {
+            rollbackPhysicalAdapterLockdownIfApplied('sing-box never started').catch(err =>
+              logEvent('warn', 'tun', 'adapter lockdown rollback after start failure failed', err)
             )
           }
           notifyStatus('stopped')
@@ -730,7 +776,8 @@ export const tunController = {
           lastStartOptions = {
             proxyAddr,
             proxyType,
-            enableFirewallKillSwitch: wantKillSwitch
+            enableFirewallKillSwitch: wantKillSwitch,
+            enableAdapterLockdown: wantAdapterLockdown
           }
           userInitiatedStop = false
 
@@ -766,6 +813,11 @@ export const tunController = {
             if (killSwitchEngaged) {
               disableKillSwitch('sing-box did not start within timeout').catch(err =>
                 logEvent('warn', 'tun', 'kill-switch disable after timeout failed', err)
+              )
+            }
+            if (adapterLockdownEngaged) {
+              rollbackPhysicalAdapterLockdownIfApplied('sing-box did not start within timeout').catch(err =>
+                logEvent('warn', 'tun', 'adapter lockdown rollback after timeout failed', err)
               )
             }
             finish({
@@ -816,6 +868,13 @@ export const tunController = {
       // that removes it — the onExit handler intentionally keeps it engaged.
       await disableKillSwitchIfActive('TUN stopped').catch(err =>
         logEvent('warn', 'tun', 'kill-switch disable after stop failed', err)
+      )
+
+      // Roll back the adapter lockdown if it's active. Same story: only on
+      // a deliberate user stop. If sing-box died unexpectedly the lockdown
+      // stays engaged until the user presses Stop or the daemon recovers.
+      await rollbackPhysicalAdapterLockdownIfApplied('TUN stopped').catch(err =>
+        logEvent('warn', 'tun', 'adapter lockdown rollback after stop failed', err)
       )
 
       return { success: true }

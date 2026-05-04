@@ -28,6 +28,13 @@ export interface AppSettings {
   // Show Windows toast notifications on state changes (TUN up/down, leak,
   // kill-switch engaged). On by default.
   desktopNotifications: boolean
+  // Hard adapter lockdown: while TUN is up, disable IPv6 + force IPv4 DNS to
+  // the TUN resolver on every physical (Wired/Wireless) adapter. Catches
+  // leaks the firewall kill-switch alone misses (DNS-over-HTTPS bypassing
+  // NRPT, IPv6 default-route preference, etc.). On by default — it's
+  // invasive but reverted on stop, and without it real-world users still see
+  // their original ISP IP in some apps.
+  strictAdapterLockdown: boolean
 }
 
 const defaults: AppSettings = {
@@ -50,7 +57,8 @@ const defaults: AppSettings = {
   advancedMode: false,
   firstRunComplete: false,
   autoRestartOnCrash: true,
-  desktopNotifications: true
+  desktopNotifications: true,
+  strictAdapterLockdown: true
 }
 
 const store = new Store<{ settings: AppSettings }>({
@@ -74,7 +82,8 @@ function normalizeSettings(input: Partial<AppSettings> | undefined): AppSettings
     advancedMode: Boolean(merged.advancedMode),
     firstRunComplete: Boolean(merged.firstRunComplete),
     autoRestartOnCrash: merged.autoRestartOnCrash !== false,
-    desktopNotifications: merged.desktopNotifications !== false
+    desktopNotifications: merged.desktopNotifications !== false,
+    strictAdapterLockdown: merged.strictAdapterLockdown !== false
   }
 }
 

@@ -205,7 +205,8 @@ export async function runAutoPilot(): Promise<AutoPilotResult> {
   const start = await tunController.start({
     proxyAddr: `${proxy.host}:${proxy.port}`,
     proxyType: proxy.type,
-    enableFirewallKillSwitch: settingsStore.get().firewallKillSwitch
+    enableFirewallKillSwitch: settingsStore.get().firewallKillSwitch,
+    enableAdapterLockdown: settingsStore.get().strictAdapterLockdown
   })
   changed = true
   if (!start.success) {

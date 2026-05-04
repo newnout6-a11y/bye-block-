@@ -9,6 +9,12 @@ import sudo from 'sudo-prompt'
 import { execElevated, isProcessElevated } from './admin'
 import { logEvent } from './appLogger'
 import { rollbackTunNetworkBaselineIfApplied } from './systemNetwork'
+import {
+  disableKillSwitch,
+  disableKillSwitchIfActive,
+  enableKillSwitch,
+  isKillSwitchActive
+} from './firewallKillSwitch'
 
 const exec = promisify(execCb)
 
@@ -24,6 +30,12 @@ export interface TunStatus {
 interface StartOptions {
   proxyAddr: string
   proxyType?: 'socks5' | 'http'
+  // When true, install Windows Firewall block-outbound rules on every physical
+  // adapter before sing-box starts. The rules stay active for the entire TUN
+  // lifetime and are NOT removed if sing-box dies unexpectedly — that's the
+  // whole point: traffic stays blocked at the firewall layer until the user
+  // explicitly stops TUN or the daemon comes back up.
+  enableFirewallKillSwitch?: boolean
 }
 
 let currentStatus: TunStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
@@ -418,6 +430,8 @@ export const tunController = {
     const proxyAddr = typeof proxyAddrOrOpts === 'string' ? proxyAddrOrOpts : proxyAddrOrOpts.proxyAddr
     const proxyType: 'socks5' | 'http' =
       typeof proxyAddrOrOpts === 'string' ? 'socks5' : proxyAddrOrOpts.proxyType ?? 'socks5'
+    const wantKillSwitch =
+      typeof proxyAddrOrOpts === 'object' && proxyAddrOrOpts.enableFirewallKillSwitch === true
 
     // ---------- Pre-flight 1: detect another VPN/TUN ----------
     // We no longer abort here: Happ often exposes both a local proxy and its own TUN.
@@ -484,6 +498,24 @@ export const tunController = {
 
     const runtimeDir = dirname(runtime.singbox)
 
+    // Engage firewall kill-switch BEFORE spawning sing-box. Doing it after
+    // would leave a tiny window where TUN is up but the firewall is open —
+    // and more importantly, if sing-box ever crashes, the rules are already
+    // in place so traffic cannot leak. The allow-program rule we install for
+    // sing-box.exe is what lets sing-box dial the upstream proxy through the
+    // physical adapter (relevant for non-loopback proxies).
+    let killSwitchEngaged = false
+    let killSwitchWarning: string | null = null
+    if (wantKillSwitch) {
+      const ks = await enableKillSwitch({ singboxExePath: runtime.singbox })
+      if (ks.success) {
+        killSwitchEngaged = true
+      } else {
+        killSwitchWarning = `Firewall kill-switch не включился: ${ks.message}`
+        logEvent('warn', 'tun', 'firewall kill-switch failed to engage', ks)
+      }
+    }
+
     // sudo-prompt's callback fires on child exit. For a long-running daemon we:
     // 1. Fire-and-forget the sudo.exec call, using its callback to mark "stopped" on exit.
     // 2. Poll tasklist for sing-box.exe to determine if it actually started.
@@ -503,22 +535,46 @@ export const tunController = {
         const wasRunning = currentStatus.running
         stopProxyWatchdog()
         currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
-        notifyStatus('stopped')
         if (!resolved) {
           const msg = error?.message || (stderr ? String(stderr) : 'sing-box не запустился')
           logEvent('error', 'tun', 'sing-box exited before startup completed', { message: msg, stderr })
+          // sing-box never came up. Tear down the kill-switch we just installed
+          // — otherwise the user is locked out of the internet for no reason.
+          if (killSwitchEngaged) {
+            disableKillSwitch('sing-box never started').catch(err =>
+              logEvent('warn', 'tun', 'kill-switch disable after start failure failed', err)
+            )
+          }
+          notifyStatus('stopped')
           finish({ success: false, error: msg })
         } else if (error || stderr) {
           logEvent(error ? 'error' : 'warn', 'tun', 'sing-box process exited', { error: error?.message, stderr })
         } else {
           logEvent('info', 'tun', 'sing-box process exited')
         }
-        // sing-box died unexpectedly while we believed TUN was up. Restore proxy settings
-        // so we don't leave the user with both no-VPN and no-original-proxy-config.
+        // sing-box died unexpectedly while we believed TUN was up. Two things to do:
+        //  1. Restore proxy baseline (if applied) so we don't leave the user with
+        //     no-VPN AND no-original-proxy-config.
+        //  2. INTENTIONALLY KEEP the firewall kill-switch in place. Removing it
+        //     here would defeat the purpose of "all traffic through VPN": the
+        //     entire reason it exists is to block fall-through to the physical
+        //     adapter when the daemon dies. The user must explicitly press Stop
+        //     (or the daemon must come back up) to drop the rules.
         if (wasRunning) {
           rollbackTunNetworkBaselineIfApplied('sing-box exited').catch(err =>
             logEvent('warn', 'tun', 'baseline auto-rollback after sing-box exit failed', err)
           )
+          if (killSwitchEngaged) {
+            logEvent(
+              'warn',
+              'tun',
+              'sing-box exited unexpectedly — keeping firewall kill-switch active'
+            )
+            // Tell the UI traffic is now firewall-blocked, not just "stopped".
+            notifyStatus('killswitch-active')
+            return
+          }
+          notifyStatus('stopped')
         }
       }
 
@@ -538,15 +594,23 @@ export const tunController = {
         const running = await isSingboxRunning()
         if (running) {
           clearInterval(poller)
-          currentStatus = { running: true, proxyAddr, proxyType, pid: null, warning, proxyReachable: true }
+          const combinedWarning = [warning, killSwitchWarning].filter(Boolean).join(' | ') || null
+          currentStatus = { running: true, proxyAddr, proxyType, pid: null, warning: combinedWarning, proxyReachable: true }
           startProxyWatchdog(proxyAddr)
-          logEvent('info', 'tun', 'TUN started', { proxyAddr, proxyType, warning })
+          logEvent('info', 'tun', 'TUN started', { proxyAddr, proxyType, warning: combinedWarning, killSwitch: killSwitchEngaged })
           notifyStatus('running')
-          finish({ success: true, warning })
+          finish({ success: true, warning: combinedWarning })
         } else if (attempts >= maxAttempts) {
           clearInterval(poller)
           if (!resolved) {
             logEvent('error', 'tun', 'sing-box did not start within timeout', { proxyAddr, proxyType })
+            // sing-box never reported running. Drop the kill-switch we installed
+            // pre-flight so the user isn't stuck offline because of UAC denial.
+            if (killSwitchEngaged) {
+              disableKillSwitch('sing-box did not start within timeout').catch(err =>
+                logEvent('warn', 'tun', 'kill-switch disable after timeout failed', err)
+              )
+            }
             finish({
               success: false,
               error: 'sing-box не стартовал за 7 секунд. Проверьте UAC-подтверждение и журнал.'
@@ -573,11 +637,25 @@ export const tunController = {
         logEvent('warn', 'tun', 'baseline auto-rollback after stop failed', err)
       )
 
+      // Drop the firewall kill-switch (if any). This is the only graceful path
+      // that removes it — the onExit handler intentionally keeps it engaged.
+      await disableKillSwitchIfActive('TUN stopped').catch(err =>
+        logEvent('warn', 'tun', 'kill-switch disable after stop failed', err)
+      )
+
       return { success: true }
     } catch (err: any) {
       logEvent('error', 'tun', 'failed to stop TUN', err)
       return { success: false, error: err.message || String(err) }
     }
+  },
+
+  async isFirewallKillSwitchActive(): Promise<boolean> {
+    return isKillSwitchActive()
+  },
+
+  async disableFirewallKillSwitch(reason: string): Promise<{ success: boolean; message: string }> {
+    return disableKillSwitchIfActive(reason)
   },
 
   getStatus(): TunStatus {

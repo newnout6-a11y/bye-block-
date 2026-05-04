@@ -12,6 +12,7 @@ export interface AppSettings {
   minimizeToTray: boolean
   locationPrivacyEnabled: boolean
   autoNetworkBaseline: boolean
+  firewallKillSwitch: boolean
 }
 
 const defaults: AppSettings = {
@@ -26,7 +27,11 @@ const defaults: AppSettings = {
   // Off by default — wiping HKCU\Internet Settings + WinHTTP + env proxies is destructive
   // and not actually required for TUN to capture traffic at the routing layer. Users who
   // need to fix UWP/Store traffic capture can opt in via Settings → "Auto baseline".
-  autoNetworkBaseline: false
+  autoNetworkBaseline: false,
+  // On by default — this is the only thing that turns "all traffic should go through VPN"
+  // from a routing convention into a real guarantee. Without it, sing-box dying for any
+  // reason (crash, OOM, killed by AV) instantly drops traffic onto the physical adapter.
+  firewallKillSwitch: true
 }
 
 const store = new Store<{ settings: AppSettings }>({
@@ -45,7 +50,8 @@ function normalizeSettings(input: Partial<AppSettings> | undefined): AppSettings
     autoPilotEnabled: merged.autoPilotEnabled !== false,
     minimizeToTray: Boolean(merged.minimizeToTray),
     locationPrivacyEnabled: Boolean(merged.locationPrivacyEnabled),
-    autoNetworkBaseline: Boolean(merged.autoNetworkBaseline)
+    autoNetworkBaseline: Boolean(merged.autoNetworkBaseline),
+    firewallKillSwitch: merged.firewallKillSwitch !== false
   }
 }
 

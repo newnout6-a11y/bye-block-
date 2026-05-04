@@ -42,6 +42,7 @@ export interface AppSettings {
   minimizeToTray: boolean
   locationPrivacyEnabled: boolean
   autoNetworkBaseline: boolean
+  firewallKillSwitch: boolean
 }
 
 export interface LeakCheckItem {
@@ -72,6 +73,11 @@ interface AppState {
   proxy: ProxyInfo | null
   detecting: boolean
   tunRunning: boolean
+  // True iff the firewall kill-switch rules are currently installed. Used to
+  // drive the Dashboard banner that appears when sing-box died but the rules
+  // are still in place — the user has to either restart TUN or manually drop
+  // the rules.
+  firewallKillSwitchActive: boolean
   autoconfigTargets: AutoconfigTarget[]
   routingHealth: RoutingHealth
   leakChecks: LeakCheckResult | null
@@ -84,6 +90,7 @@ interface AppState {
   setProxy: (proxy: ProxyInfo | null) => void
   setDetecting: (d: boolean) => void
   setTunRunning: (r: boolean) => void
+  setFirewallKillSwitchActive: (active: boolean) => void
   setAutoconfigTargets: (targets: AutoconfigTarget[]) => void
   setLeakChecks: (checks: LeakCheckResult | null) => void
   toggleTarget: (id: string) => void
@@ -101,6 +108,7 @@ export const useAppStore = create<AppState>((set) => ({
   proxy: null,
   detecting: false,
   tunRunning: false,
+  firewallKillSwitchActive: false,
   autoconfigTargets: [
     { id: 'android-studio', name: 'Android Studio', applied: false, enabled: true },
     { id: 'gradle', name: 'Gradle', applied: false, enabled: true },
@@ -123,7 +131,8 @@ export const useAppStore = create<AppState>((set) => ({
     autoPilotEnabled: true,
     minimizeToTray: true,
     locationPrivacyEnabled: false,
-    autoNetworkBaseline: true
+    autoNetworkBaseline: true,
+    firewallKillSwitch: true
   },
 
   setMode: (mode) => set({ mode }),
@@ -132,6 +141,7 @@ export const useAppStore = create<AppState>((set) => ({
   setProxy: (proxy) => set({ proxy }),
   setDetecting: (d) => set({ detecting: d }),
   setTunRunning: (r) => set({ tunRunning: r }),
+  setFirewallKillSwitchActive: (active) => set({ firewallKillSwitchActive: active }),
   setAutoconfigTargets: (targets) => set({ autoconfigTargets: targets }),
   setLeakChecks: (checks) => set({
     leakChecks: checks,

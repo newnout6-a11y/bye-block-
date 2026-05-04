@@ -2,7 +2,7 @@ import { ModeSwitch } from '../components/ModeSwitch'
 import { IpCard } from '../components/IpCard'
 import { ProxyCard } from '../components/ProxyCard'
 import { useAppStore } from '../store'
-import { Activity, CheckCircle2, Info, Loader2, Radar, Shield, ShieldOff, TriangleAlert } from 'lucide-react'
+import { Activity, CheckCircle2, Info, Loader2, Lock, Radar, Shield, ShieldOff, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 
 export function Dashboard() {
@@ -13,8 +13,33 @@ export function Dashboard() {
   const routingHealth = useAppStore(s => s.routingHealth)
   const leakChecks = useAppStore(s => s.leakChecks)
   const setLeakChecks = useAppStore(s => s.setLeakChecks)
+  const firewallKillSwitchActive = useAppStore(s => s.firewallKillSwitchActive)
+  const setFirewallKillSwitchActive = useAppStore(s => s.setFirewallKillSwitchActive)
   const addLog = useAppStore(s => s.addLog)
   const [checking, setChecking] = useState(false)
+  const [disengaging, setDisengaging] = useState(false)
+
+  // Show the kill-switch banner when sing-box is no longer running but the
+  // firewall rules are still in place. While TUN is up the kill-switch is
+  // "happily engaged" — no need to scare the user.
+  const showKillSwitchBanner = firewallKillSwitchActive && !tunRunning
+
+  const handleDisengageKillSwitch = async () => {
+    setDisengaging(true)
+    try {
+      const result = await window.electronAPI.disableFirewallKillSwitch()
+      if (result.success) {
+        setFirewallKillSwitchActive(false)
+        addLog('warn', `Firewall kill-switch снят вручную: ${result.message}`)
+      } else {
+        addLog('error', `Не удалось снять kill-switch: ${result.message}`)
+      }
+    } catch (err: any) {
+      addLog('error', `Ошибка снятия kill-switch: ${err.message}`)
+    } finally {
+      setDisengaging(false)
+    }
+  }
 
   const runDiagnostics = async () => {
     const proxyAddr = settings.proxyOverride.trim() || (proxy ? `${proxy.host}:${proxy.port}` : '')
@@ -69,6 +94,31 @@ export function Dashboard() {
           <div>
             <p className="text-sm font-bold text-danger">Обнаружена утечка IP!</p>
             <p className="text-xs text-danger/80">Ваш реальный IP виден. Включите Жёсткий режим или проверьте VPN-подключение.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Firewall kill-switch banner: TUN is down but firewall rules still block all
+          outbound traffic on physical adapters. The user has to either restart TUN
+          or accept the leak window and click Снять. */}
+      {showKillSwitchBanner && (
+        <div className="bg-warning/15 border border-warning/40 rounded-lg p-4 flex items-start gap-3">
+          <Lock className="w-6 h-6 text-warning flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm font-bold text-warning">VPN отключён — файрвол kill-switch активен</p>
+            <p className="text-xs text-warning/90 mt-1">
+              sing-box не работает, но правила Windows Firewall всё ещё блокируют весь исходящий
+              трафик на физических адаптерах — это и есть kill-switch. Перезапустите VPN чтобы восстановить связь через туннель,
+              или снимите правила вручную (трафик пойдёт мимо VPN).
+            </p>
+            <button
+              onClick={handleDisengageKillSwitch}
+              disabled={disengaging}
+              className="btn-secondary mt-2 text-xs flex items-center gap-2 disabled:opacity-50"
+            >
+              {disengaging ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldOff className="w-3.5 h-3.5" />}
+              Снять kill-switch вручную
+            </button>
           </div>
         </div>
       )}
@@ -131,10 +181,10 @@ export function Dashboard() {
           </p>
         </div>
         <div className="card text-center">
-          <ShieldOff className={`w-5 h-5 mx-auto mb-1 ${mode === 'off' ? 'text-warning' : 'text-gray-600'}`} />
+          <Lock className={`w-5 h-5 mx-auto mb-1 ${firewallKillSwitchActive ? 'text-success' : mode === 'off' ? 'text-warning' : 'text-gray-600'}`} />
           <p className="text-xs text-gray-400">Kill Switch</p>
-          <p className={`text-sm font-bold ${mode === 'hard' ? 'text-success' : 'text-gray-500'}`}>
-            {mode === 'hard' ? 'Вкл.' : 'Выкл.'}
+          <p className={`text-sm font-bold ${firewallKillSwitchActive ? 'text-success' : mode === 'hard' ? 'text-success' : 'text-gray-500'}`}>
+            {firewallKillSwitchActive ? 'Файрвол' : mode === 'hard' ? 'TUN' : 'Выкл.'}
           </p>
         </div>
       </div>

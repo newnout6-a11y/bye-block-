@@ -33,6 +33,8 @@ declare global {
       clearAppLog: () => Promise<any>
       applyTunNetworkBaseline: () => Promise<any>
       rollbackTunNetworkBaseline: () => Promise<any>
+      disableFirewallKillSwitch: () => Promise<{ success: boolean; message: string }>
+      getFirewallKillSwitchStatus: () => Promise<{ active: boolean }>
       getLocationPrivacy: () => Promise<any>
       applyLocationPrivacy: () => Promise<any>
       rollbackLocationPrivacy: () => Promise<any>
@@ -77,14 +79,23 @@ export default function App() {
       const store = useAppStore.getState()
       // 'proxy-down' means TUN is still up but upstream proxy is unreachable — we keep
       // tunRunning=true so the kill-switch state is reflected (traffic blocked, not leaked).
+      // 'killswitch-active' means sing-box died unexpectedly, TUN is gone, but the
+      // firewall kill-switch is still blocking outbound traffic on the physical adapter.
       const tunUp = status === 'running' || status === 'proxy-down'
       store.setTunRunning(tunUp)
       if (!tunUp && store.mode === 'hard') store.setMode('off')
       if (status === 'proxy-down') {
         addLog('warn', 'Upstream proxy не отвечает — трафик заблокирован в TUN (kill-switch)')
+      } else if (status === 'killswitch-active') {
+        addLog('error', 'sing-box упал — файрвол kill-switch блокирует весь исходящий трафик')
       } else {
         addLog('info', `Статус TUN: ${status}`)
       }
+      // Refresh kill-switch state after every TUN transition so the Dashboard
+      // banner reflects reality without polling.
+      window.electronAPI.getFirewallKillSwitchStatus()
+        .then(({ active }) => store.setFirewallKillSwitchActive(active))
+        .catch(() => undefined)
     })
 
     return () => {
@@ -164,6 +175,11 @@ export default function App() {
         store.setTunRunning(tunStatus.running)
         if (tunStatus.running) store.setMode('hard')
         else if (useAppStore.getState().mode === 'hard' && settings.autoPilotEnabled) store.setMode('off')
+      } catch { /* */ }
+
+      try {
+        const ks = await window.electronAPI.getFirewallKillSwitchStatus()
+        store.setFirewallKillSwitchActive(ks.active)
       } catch { /* */ }
 
       try {

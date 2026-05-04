@@ -18,6 +18,11 @@ import {
   rollbackTunNetworkBaseline,
   rollbackTunNetworkBaselineIfApplied
 } from './systemNetwork'
+import {
+  disableKillSwitchIfActive,
+  isKillSwitchActive,
+  recoverStaleKillSwitch
+} from './firewallKillSwitch'
 import { relaunchElevatedIfNeeded } from './admin'
 import { clearAppLog, getFullLogs, logEvent, openLogFolder, type AppLogLevel } from './appLogger'
 import { runSystemDiagnostics } from './systemDiagnostics'
@@ -148,6 +153,18 @@ app.whenReady().then(async () => {
   }
 
   await recoverStaleBaseline()
+  await recoverStaleKillSwitch(async () => {
+    try {
+      const { stdout } = await exec('tasklist /FI "IMAGENAME eq vpnte-sing-box.exe" /FO CSV /NH', {
+        windowsHide: true,
+        timeout: 5000,
+        encoding: 'utf8'
+      })
+      return String(stdout).toLowerCase().includes('vpnte-sing-box.exe')
+    } catch {
+      return false
+    }
+  })
 
   const initialSettings = settingsStore.get()
   settingsStore.syncLoginItem()
@@ -182,10 +199,15 @@ app.whenReady().then(async () => {
       }
     }
 
-    const result = await tunController.start({ proxyAddr, proxyType: proxyType ?? 'socks5' })
+    const result = await tunController.start({
+      proxyAddr,
+      proxyType: proxyType ?? 'socks5',
+      enableFirewallKillSwitch: settingsStore.get().firewallKillSwitch
+    })
     if (!result.success) {
       // TUN failed to start. If we wiped the user's proxy settings to prepare for it,
-      // restore them now so we don't leave the system worse than we found it.
+      // restore them now so we don't leave the system worse than we found it. The
+      // kill-switch is dropped by tunController itself in this path — see start().
       await rollbackTunNetworkBaselineIfApplied('start-tun failed').catch(err =>
         logEvent('warn', 'app', 'rollback after start-tun failure failed', err)
       )
@@ -292,6 +314,18 @@ app.whenReady().then(async () => {
     return rollbackTunNetworkBaseline()
   })
 
+  // Manual override: snip the firewall kill-switch even if sing-box hasn't been
+  // restarted. Used by the Dashboard banner that appears when sing-box died and
+  // left the rules in place — the user can either restart TUN or, as a last
+  // resort, drop the kill-switch and accept the leak window themselves.
+  handleLogged('disable-firewall-kill-switch', async () => {
+    return tunController.disableFirewallKillSwitch('manual override from UI')
+  })
+
+  handleLogged('get-firewall-kill-switch-status', async () => {
+    return { active: await isKillSwitchActive() }
+  })
+
   handleLogged('get-location-privacy', async () => {
     return getLocationPrivacyStatus()
   })
@@ -356,6 +390,14 @@ async function performShutdownCleanup(reason: string): Promise<void> {
     await rollbackTunNetworkBaselineIfApplied(`shutdown: ${reason}`)
   } catch (err) {
     logEvent('warn', 'app', 'baseline rollback during shutdown failed', err)
+  }
+
+  try {
+    // Always disengage the firewall kill-switch on app exit. Leaving it in
+    // place would lock the user out of the internet between sessions.
+    await disableKillSwitchIfActive(`shutdown: ${reason}`)
+  } catch (err) {
+    logEvent('warn', 'app', 'kill-switch disable during shutdown failed', err)
   }
 
   try {

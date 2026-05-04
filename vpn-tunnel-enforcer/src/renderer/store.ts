@@ -111,6 +111,31 @@ interface AppState {
   clearLogs: () => void
   setSettings: (s: AppSettings) => void
   updateSettings: (s: Partial<AppSettings>) => void
+
+  // Result of the active leak self-test (curl-bound to physical adapter).
+  // null = never run yet.
+  leakSelfTestResult: LeakSelfTestResultClient | null
+  setLeakSelfTestResult: (r: LeakSelfTestResultClient | null) => void
+  // Last uncaught error caught by main process and forwarded for display.
+  // We don't crash on these any more — but we surface them so the user knows
+  // something happened.
+  lastMainError: { code: string; message: string; ts: number } | null
+  setLastMainError: (e: { code: string; message: string; ts: number } | null) => void
+}
+
+export interface LeakSelfTestResultClient {
+  ts: number
+  physicalAdapterReached: boolean
+  publicIpMismatch: boolean
+  defaultRoutePublicIp: string | null
+  perAdapter: Array<{
+    alias: string
+    ipv4: string | null
+    publicIpViaThisAdapter: string | null
+    curlExitCode: number | null
+    curlStderrTail: string | null
+  }>
+  summary: string
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -124,6 +149,8 @@ export const useAppStore = create<AppState>((set) => ({
   tunStartedAt: null,
   restartingProgress: null,
   firewallKillSwitchActive: false,
+  leakSelfTestResult: null,
+  lastMainError: null,
   autoconfigTargets: [
     { id: 'android-studio', name: 'Android Studio', applied: false, enabled: true },
     { id: 'gradle', name: 'Gradle', applied: false, enabled: true },
@@ -199,5 +226,7 @@ export const useAppStore = create<AppState>((set) => ({
   setSettings: (settings) => set({ settings }),
   updateSettings: (partial) => set((s) => ({
     settings: { ...s.settings, ...partial }
-  }))
+  })),
+  setLeakSelfTestResult: (r) => set({ leakSelfTestResult: r }),
+  setLastMainError: (e) => set({ lastMainError: e })
 }))

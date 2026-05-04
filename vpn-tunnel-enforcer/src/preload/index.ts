@@ -31,8 +31,28 @@ export interface ElectronAPI {
   openTunLogFolder: () => Promise<string>
   openLogFolder: () => Promise<string>
   exportDiagnostics: () => Promise<{ success: boolean; path?: string; error?: string; cancelled?: boolean }>
+  runLeakSelfTest: () => Promise<LeakSelfTestResult>
+  openSnapshotsFolder: () => Promise<{ success: boolean; path?: string; error?: string }>
   onIpChanged: (callback: (data: { ip: string; isLeak: boolean }) => void) => () => void
   onTunStatusChanged: (callback: (status: string) => void) => () => void
+  onLeakDetected: (callback: (result: LeakSelfTestResult) => void) => () => void
+  onMainError: (callback: (data: { code: string; message: string }) => void) => () => void
+}
+
+export interface LeakSelfTestAdapter {
+  alias: string
+  ipv4: string | null
+  publicIpViaThisAdapter: string | null
+  curlExitCode: number | null
+  curlStderrTail: string | null
+}
+export interface LeakSelfTestResult {
+  ts: number
+  physicalAdapterReached: boolean
+  publicIpMismatch: boolean
+  defaultRoutePublicIp: string | null
+  perAdapter: LeakSelfTestAdapter[]
+  summary: string
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -66,6 +86,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openTunLogFolder: () => ipcRenderer.invoke('open-tun-log-folder'),
   openLogFolder: () => ipcRenderer.invoke('open-log-folder'),
   exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
+  runLeakSelfTest: () => ipcRenderer.invoke('run-leak-self-test'),
+  openSnapshotsFolder: () => ipcRenderer.invoke('open-snapshots-folder'),
   onIpChanged: (callback: (data: { ip: string; isLeak: boolean }) => void) => {
     const handler = (_event: any, data: { ip: string; isLeak: boolean }) => callback(data)
     ipcRenderer.on('ip-changed', handler)
@@ -75,5 +97,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: any, status: string) => callback(status)
     ipcRenderer.on('tun-status-changed', handler)
     return () => ipcRenderer.removeListener('tun-status-changed', handler)
+  },
+  onLeakDetected: (callback: (result: LeakSelfTestResult) => void) => {
+    const handler = (_event: any, result: LeakSelfTestResult) => callback(result)
+    ipcRenderer.on('leak-detected', handler)
+    return () => ipcRenderer.removeListener('leak-detected', handler)
+  },
+  onMainError: (callback: (data: { code: string; message: string }) => void) => {
+    const handler = (_event: any, data: { code: string; message: string }) => callback(data)
+    ipcRenderer.on('main-error', handler)
+    return () => ipcRenderer.removeListener('main-error', handler)
   }
 })

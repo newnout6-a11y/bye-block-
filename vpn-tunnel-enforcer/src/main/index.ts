@@ -28,6 +28,8 @@ import { clearAppLog, getFullLogs, logEvent, openLogFolder, type AppLogLevel } f
 import { runSystemDiagnostics } from './systemDiagnostics'
 import { getRoutingPlan } from './connectionPlanner'
 import { runAutoPilot } from './autoPilot'
+import { notify } from './notifications'
+import { exportDiagnosticsZip } from './diagnosticsExport'
 
 const exec = promisify(execCb)
 
@@ -352,10 +354,17 @@ app.whenReady().then(async () => {
     return openLogFolder()
   })
 
+  handleLogged('export-diagnostics', async () => {
+    return exportDiagnosticsZip()
+  })
+
   // Push events from main → renderer
   ipMonitor.onIpChange((ip: string, isLeak: boolean) => {
     mainWindow?.webContents.send('ip-changed', { ip, isLeak })
     if (tray) updateTrayIcon(tray, isLeak ? 'leak' : tunController.getStatus().running ? 'protected' : 'off')
+    if (isLeak) {
+      notify('error', 'Виден ваш реальный IP', `Текущий публичный IP: ${ip}. Включите защиту или проверьте VPN-клиент.`)
+    }
   })
 
   tunController.onStatusChange((status: string) => {

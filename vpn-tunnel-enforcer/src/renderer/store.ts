@@ -77,6 +77,12 @@ interface AppState {
   proxy: ProxyInfo | null
   detecting: boolean
   tunRunning: boolean
+  // Wall-clock ms when the current TUN run started (or null when not running).
+  // Used by the hero card to show "Защищено • 12 минут".
+  tunStartedAt: number | null
+  // When non-null we are inside the auto-restart loop. Format is "N/M" where
+  // N is the current attempt and M is the max number of retries.
+  restartingProgress: string | null
   // True iff the firewall kill-switch rules are currently installed. Used to
   // drive the Dashboard banner that appears when sing-box died but the rules
   // are still in place — the user has to either restart TUN or manually drop
@@ -94,6 +100,8 @@ interface AppState {
   setProxy: (proxy: ProxyInfo | null) => void
   setDetecting: (d: boolean) => void
   setTunRunning: (r: boolean) => void
+  setTunStartedAt: (ts: number | null) => void
+  setRestarting: (progress: string | null) => void
   setFirewallKillSwitchActive: (active: boolean) => void
   setAutoconfigTargets: (targets: AutoconfigTarget[]) => void
   setLeakChecks: (checks: LeakCheckResult | null) => void
@@ -112,6 +120,8 @@ export const useAppStore = create<AppState>((set) => ({
   proxy: null,
   detecting: false,
   tunRunning: false,
+  tunStartedAt: null,
+  restartingProgress: null,
   firewallKillSwitchActive: false,
   autoconfigTargets: [
     { id: 'android-studio', name: 'Android Studio', applied: false, enabled: true },
@@ -148,7 +158,13 @@ export const useAppStore = create<AppState>((set) => ({
   setVpnIp: (ip) => set({ vpnIp: ip }),
   setProxy: (proxy) => set({ proxy }),
   setDetecting: (d) => set({ detecting: d }),
-  setTunRunning: (r) => set({ tunRunning: r }),
+  setTunRunning: (r) => set((state) => ({
+    tunRunning: r,
+    // Reset the restart progress as soon as the run becomes healthy again.
+    restartingProgress: r ? null : state.restartingProgress
+  })),
+  setTunStartedAt: (ts) => set({ tunStartedAt: ts }),
+  setRestarting: (progress) => set({ restartingProgress: progress }),
   setFirewallKillSwitchActive: (active) => set({ firewallKillSwitchActive: active }),
   setAutoconfigTargets: (targets) => set({ autoconfigTargets: targets }),
   setLeakChecks: (checks) => set({

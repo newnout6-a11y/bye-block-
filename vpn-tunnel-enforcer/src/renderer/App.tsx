@@ -16,7 +16,7 @@ declare global {
       getPublicIp: () => Promise<{ ip: string | null; isLeak: boolean; vpnIp: string | null }>
       startTun: (proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<{ success: boolean; error?: string; warning?: string | null; vpnIp?: string | null }>
       stopTun: () => Promise<{ success: boolean; error?: string }>
-      getTunStatus: () => Promise<{ running: boolean; proxyAddr: string | null; proxyType: 'socks5' | 'http' | null; pid: number | null; warning?: string | null }>
+      getTunStatus: () => Promise<{ running: boolean; proxyAddr: string | null; proxyType: 'socks5' | 'http' | null; pid: number | null; warning?: string | null; startedAt?: number | null; restartAttempt?: number }>
       applyAutoconfig: (targets: string[], proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<Record<string, boolean>>
       rollbackAutoconfig: (targets: string[]) => Promise<Record<string, boolean>>
       getAutoconfigStatus: () => Promise<any[]>
@@ -41,6 +41,7 @@ declare global {
       rollbackLocationPrivacy: () => Promise<any>
       openTunLogFolder: () => Promise<string>
       openLogFolder: () => Promise<string>
+      exportDiagnostics: () => Promise<{ success: boolean; path?: string; error?: string; cancelled?: boolean }>
       onIpChanged: (callback: (data: { ip: string; isLeak: boolean }) => void) => () => void
       onTunStatusChanged: (callback: (status: string) => void) => () => void
     }
@@ -82,9 +83,13 @@ export default function App() {
       // tunRunning=true so the kill-switch state is reflected (traffic blocked, not leaked).
       // 'killswitch-active' means sing-box died unexpectedly, TUN is gone, but the
       // firewall kill-switch is still blocking outbound traffic on the physical adapter.
+      // 'restarting:N/M' is fired by the auto-restart loop while we wait between
+      // attempts — TUN is down but we expect it to come back without user action.
+      const isRestarting = status.startsWith('restarting:')
       const tunUp = status === 'running' || status === 'proxy-down'
       store.setTunRunning(tunUp)
-      if (!tunUp && store.mode === 'hard') store.setMode('off')
+      store.setRestarting(isRestarting ? status.slice('restarting:'.length) : null)
+      if (!tunUp && !isRestarting && store.mode === 'hard') store.setMode('off')
       if (status === 'running') {
         addLog('info', 'Защита включена — весь трафик идёт через VPN.')
       } else if (status === 'stopped') {
@@ -93,6 +98,9 @@ export default function App() {
         addLog('warn', 'VPN-сервер не отвечает — трафик заблокирован для безопасности. Проверьте ваш VPN-клиент (Happ).')
       } else if (status === 'killswitch-active') {
         addLog('error', 'sing-box упал. Файрвол блокирует весь трафик, пока вы не перезапустите защиту.')
+      } else if (isRestarting) {
+        const [n, total] = status.slice('restarting:'.length).split('/')
+        addLog('warn', `Авто-перезапуск защиты (попытка ${n} из ${total})…`)
       } else {
         addLog('info', `Статус TUN: ${status}`)
       }
@@ -100,6 +108,10 @@ export default function App() {
       // banner reflects reality without polling.
       window.electronAPI.getFirewallKillSwitchStatus()
         .then(({ active }) => store.setFirewallKillSwitchActive(active))
+        .catch(() => undefined)
+      // Pull the fresh startedAt from main so the uptime pill is correct.
+      window.electronAPI.getTunStatus()
+        .then((s) => store.setTunStartedAt(s.startedAt ?? null))
         .catch(() => undefined)
     })
 
@@ -178,6 +190,7 @@ export default function App() {
       try {
         const tunStatus = await window.electronAPI.getTunStatus()
         store.setTunRunning(tunStatus.running)
+        store.setTunStartedAt(tunStatus.startedAt ?? null)
         if (tunStatus.running) store.setMode('hard')
         else if (useAppStore.getState().mode === 'hard' && settings.autoPilotEnabled) store.setMode('off')
       } catch { /* */ }
@@ -207,6 +220,38 @@ export default function App() {
     }
     init()
   }, [])
+
+  // Periodic auto-recheck of the Happ proxy. If the user closes/reopens Happ,
+  // it can come back on a different port (Happ rotates ports between launches
+  // sometimes). We re-detect every 90s and silently update the store. The
+  // recheck is skipped while the user has a manual proxyOverride set, while
+  // TUN is up (changing the address mid-flight would be confusing), and
+  // while we're inside the auto-restart loop.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const state = useAppStore.getState()
+      if (state.tunRunning) return
+      if (state.restartingProgress !== null) return
+      if (state.settings.proxyOverride.trim()) return
+      try {
+        const fresh = await window.electronAPI.detectHapp()
+        if (!fresh) return
+        const current = useAppStore.getState().proxy
+        const changed =
+          !current ||
+          current.host !== fresh.host ||
+          current.port !== fresh.port ||
+          current.type !== fresh.type
+        if (changed) {
+          useAppStore.getState().setProxy(fresh)
+          addLog('info', `Happ переехал — обновили адрес: ${fresh.host}:${fresh.port} (${fresh.type})`)
+        }
+      } catch {
+        // Stay quiet: Happ может быть просто выключен.
+      }
+    }, 90000)
+    return () => clearInterval(interval)
+  }, [addLog])
 
   const settings = useAppStore(s => s.settings)
   const updateSettings = useAppStore(s => s.updateSettings)

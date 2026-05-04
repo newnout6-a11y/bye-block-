@@ -5,7 +5,7 @@ export interface ElectronAPI {
   getPublicIp: () => Promise<{ ip: string | null; isLeak: boolean; vpnIp: string | null }>
   startTun: (proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<{ success: boolean; error?: string; warning?: string | null; vpnIp?: string | null }>
   stopTun: () => Promise<{ success: boolean; error?: string }>
-  getTunStatus: () => Promise<{ running: boolean; proxyAddr: string | null; proxyType: 'socks5' | 'http' | null; pid: number | null; warning?: string | null }>
+  getTunStatus: () => Promise<{ running: boolean; proxyAddr: string | null; proxyType: 'socks5' | 'http' | null; pid: number | null; warning?: string | null; startedAt?: number | null; restartAttempt?: number }>
   applyAutoconfig: (targets: string[], proxyAddr: string, proxyType?: 'socks5' | 'http') => Promise<Record<string, boolean>>
   rollbackAutoconfig: (targets: string[]) => Promise<Record<string, boolean>>
   getAutoconfigStatus: () => Promise<any[]>
@@ -30,6 +30,7 @@ export interface ElectronAPI {
   rollbackLocationPrivacy: () => Promise<any>
   openTunLogFolder: () => Promise<string>
   openLogFolder: () => Promise<string>
+  exportDiagnostics: () => Promise<{ success: boolean; path?: string; error?: string; cancelled?: boolean }>
   onIpChanged: (callback: (data: { ip: string; isLeak: boolean }) => void) => () => void
   onTunStatusChanged: (callback: (status: string) => void) => () => void
 }
@@ -64,6 +65,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rollbackLocationPrivacy: () => ipcRenderer.invoke('rollback-location-privacy'),
   openTunLogFolder: () => ipcRenderer.invoke('open-tun-log-folder'),
   openLogFolder: () => ipcRenderer.invoke('open-log-folder'),
+  exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
   onIpChanged: (callback: (data: { ip: string; isLeak: boolean }) => void) => {
     const handler = (_event: any, data: { ip: string; isLeak: boolean }) => callback(data)
     ipcRenderer.on('ip-changed', handler)

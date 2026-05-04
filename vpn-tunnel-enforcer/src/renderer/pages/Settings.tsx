@@ -1,5 +1,5 @@
 import { useAppStore } from '../store'
-import { Bell, FolderOpen, Loader2, Lock, RefreshCw, Save, Settings2, ShieldCheck, Wand2 } from 'lucide-react'
+import { Bell, FileArchive, FolderOpen, Loader2, Lock, RefreshCw, Save, Settings2, ShieldCheck, Wand2 } from 'lucide-react'
 import { ReactNode, useState } from 'react'
 
 interface ToggleRowProps {
@@ -46,6 +46,7 @@ export function Settings() {
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
   const [openingLogs, setOpeningLogs] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const handleSave = async () => {
     setSaving(true)
@@ -80,6 +81,24 @@ export function Settings() {
       addLog('error', `Не удалось открыть папку логов: ${err.message}`)
     } finally {
       setOpeningLogs(false)
+    }
+  }
+
+  const handleExportDiagnostics = async () => {
+    setExporting(true)
+    try {
+      const result = await window.electronAPI.exportDiagnostics()
+      if (result.cancelled) {
+        addLog('info', 'Экспорт диагностики отменён.')
+      } else if (result.success && result.path) {
+        addLog('info', `Диагностика сохранена: ${result.path}`)
+      } else {
+        addLog('error', `Не удалось собрать диагностику: ${result.error || 'неизвестная ошибка'}`)
+      }
+    } catch (err: any) {
+      addLog('error', `Ошибка экспорта диагностики: ${err.message}`)
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -258,6 +277,10 @@ export function Settings() {
         <button onClick={handleOpenLogs} disabled={openingLogs} className="btn-secondary flex items-center gap-2 disabled:opacity-50">
           {openingLogs ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderOpen className="w-4 h-4" />}
           Открыть папку логов
+        </button>
+        <button onClick={handleExportDiagnostics} disabled={exporting} className="btn-secondary flex items-center gap-2 disabled:opacity-50">
+          {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileArchive className="w-4 h-4" />}
+          Экспорт диагностики (ZIP)
         </button>
       </div>
     </div>

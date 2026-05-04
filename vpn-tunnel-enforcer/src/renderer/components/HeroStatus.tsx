@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Globe, Loader2, Lock, Power, ShieldAlert, ShieldCheck, ShieldOff, TriangleAlert } from 'lucide-react'
+import { CheckCircle2, Clock, Globe, Loader2, Lock, Power, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, TriangleAlert } from 'lucide-react'
 import { useAppStore } from '../store'
+
+// Format an elapsed-ms duration as a short Russian string. Used by the uptime
+// pill on the protected hero.
+function formatUptime(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(totalSec / 3600)
+  const minutes = Math.floor((totalSec % 3600) / 60)
+  const seconds = totalSec % 60
+  if (hours > 0) return `${hours} ч ${minutes} мин`
+  if (minutes > 0) return `${minutes} мин ${seconds} с`
+  return `${seconds} с`
+}
 
 /**
  * Single hero block at the top of the Dashboard. Replaces the old combination
@@ -24,6 +36,7 @@ type Phase =
   | 'protected'
   | 'starting'
   | 'stopping'
+  | 'restarting'
   | 'leaking'
   | 'killswitch-engaged'
   | 'proxy-down'
@@ -37,9 +50,14 @@ function pickPhase(args: {
   killswitchActive: boolean
   proxy: ReturnType<typeof useAppStore.getState>['proxy']
   proxyDown: boolean
+  restartingProgress: string | null
 }): Phase {
   if (args.busy === 'starting') return 'starting'
   if (args.busy === 'stopping') return 'stopping'
+  // The auto-restart loop has higher priority than killswitch-engaged: while
+  // the timer is ticking we want to communicate "Перезапускаем…" rather
+  // than "Файрвол блокирует".
+  if (args.restartingProgress) return 'restarting'
   if (args.killswitchActive && !args.tunRunning) return 'killswitch-engaged'
   if (args.tunRunning && args.proxyDown) return 'proxy-down'
   if (args.isLeak) return 'leaking'
@@ -62,7 +80,7 @@ interface PhaseUI {
   showSpinner: boolean
 }
 
-function uiForPhase(phase: Phase, vpnIp: string | null, proxyAddr: string | null): PhaseUI {
+function uiForPhase(phase: Phase, vpnIp: string | null, proxyAddr: string | null, restartingProgress: string | null): PhaseUI {
   switch (phase) {
     case 'protected':
       return {
@@ -108,6 +126,23 @@ function uiForPhase(phase: Phase, vpnIp: string | null, proxyAddr: string | null
         primaryColor: 'accent',
         showSpinner: true
       }
+    case 'restarting': {
+      const progress = restartingProgress ?? '?/?'
+      return {
+        badge: `Перезапуск ${progress}`,
+        badgeIcon: <RefreshCw className="w-5 h-5 animate-spin" />,
+        badgeColor: 'text-warning',
+        bgClass: 'bg-warning/10',
+        borderClass: 'border-warning/40',
+        title: 'Восстанавливаем защиту…',
+        subtitle:
+          'sing-box упал, но мы пробуем запустить его заново. Файрвол продолжает блокировать трафик, чтобы не было утечки IP.',
+        primaryLabel: 'Перезапускается…',
+        primaryAction: 'noop',
+        primaryColor: 'warning',
+        showSpinner: true
+      }
+    }
     case 'leaking':
       return {
         badge: 'Утечка IP',
@@ -190,6 +225,8 @@ function uiForPhase(phase: Phase, vpnIp: string | null, proxyAddr: string | null
 
 export function HeroStatus() {
   const tunRunning = useAppStore((s) => s.tunRunning)
+  const tunStartedAt = useAppStore((s) => s.tunStartedAt)
+  const restartingProgress = useAppStore((s) => s.restartingProgress)
   const isLeak = useAppStore((s) => s.isLeak)
   const proxy = useAppStore((s) => s.proxy)
   const settings = useAppStore((s) => s.settings)
@@ -229,9 +266,20 @@ export function HeroStatus() {
     isLeak,
     killswitchActive: firewallKillSwitchActive,
     proxy,
-    proxyDown
+    proxyDown,
+    restartingProgress
   })
-  const ui = uiForPhase(phase, vpnIp || publicIp, proxyAddr || null)
+  const ui = uiForPhase(phase, vpnIp || publicIp, proxyAddr || null, restartingProgress)
+
+  // Tick once a second so the uptime label refreshes naturally without us
+  // having to wire it through the IPC stream. Cheap — only re-renders this
+  // component, and only while protected.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!tunRunning || !tunStartedAt) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [tunRunning, tunStartedAt])
 
   const handleDetect = async () => {
     setDetecting(true)
@@ -360,6 +408,12 @@ export function HeroStatus() {
             <span className="flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1.5 text-success">
               <CheckCircle2 className="w-3.5 h-3.5" />
               Внешний IP: <span className="font-mono">{publicIp}</span>
+            </span>
+          )}
+          {tunRunning && tunStartedAt && (
+            <span className="flex items-center gap-1.5 rounded-full bg-black/20 px-3 py-1.5 text-gray-300">
+              <Clock className="w-3.5 h-3.5 text-accent" />
+              Аптайм: <span className="font-mono">{formatUptime(now - tunStartedAt)}</span>
             </span>
           )}
         </div>

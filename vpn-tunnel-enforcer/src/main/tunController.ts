@@ -9,6 +9,8 @@ import sudo from 'sudo-prompt'
 import { execElevated, isProcessElevated } from './admin'
 import { logEvent } from './appLogger'
 import { rollbackTunNetworkBaselineIfApplied } from './systemNetwork'
+import { settingsStore } from './settings'
+import { notify } from './notifications'
 import {
   disableKillSwitch,
   disableKillSwitchIfActive,
@@ -25,6 +27,13 @@ export interface TunStatus {
   pid: number | null
   warning?: string | null
   proxyReachable?: boolean
+  // Wall-clock ms since the current TUN run started (null when not running).
+  // Used by the renderer for the "uptime" pill on the hero card.
+  startedAt?: number | null
+  // Tracks consecutive auto-restart attempts after an unexpected sing-box
+  // crash. 0 when TUN is up and stable; goes 1..N during recovery; resets to
+  // 0 once the new run survives the stabilisation window.
+  restartAttempt?: number
 }
 
 interface StartOptions {
@@ -38,10 +47,44 @@ interface StartOptions {
   enableFirewallKillSwitch?: boolean
 }
 
-let currentStatus: TunStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
+let currentStatus: TunStatus = {
+  running: false,
+  proxyAddr: null,
+  proxyType: null,
+  pid: null,
+  warning: null,
+  proxyReachable: true,
+  startedAt: null,
+  restartAttempt: 0
+}
 let statusCallbacks: ((status: string) => void)[] = []
 let watchdogTimer: ReturnType<typeof setInterval> | null = null
 let watchdogFailures = 0
+
+// Auto-restart bookkeeping. We remember the last successful start params so we
+// can replay them after an unexpected sing-box crash without asking the user.
+// Cleared on a user-initiated stop so we don't try to "recover" from a
+// deliberate shutdown.
+let lastStartOptions: StartOptions | null = null
+let restartAttempt = 0
+let restartTimer: ReturnType<typeof setTimeout> | null = null
+let stableTimer: ReturnType<typeof setTimeout> | null = null
+// Set to true while inside `stop()` (and right after `start()` returns failure)
+// so the onExit handler doesn't kick off a recovery loop.
+let userInitiatedStop = false
+const RESTART_BACKOFF_MS = [2000, 5000, 10000] as const
+const STABLE_RESET_MS = 30000
+
+function clearRestartTimers() {
+  if (restartTimer) {
+    clearTimeout(restartTimer)
+    restartTimer = null
+  }
+  if (stableTimer) {
+    clearTimeout(stableTimer)
+    stableTimer = null
+  }
+}
 
 const RUNTIME_EXE_NAME = 'vpnte-sing-box.exe'
 const PROXY_CORE_PROCESS_NAMES = [
@@ -427,6 +470,15 @@ export const tunController = {
       return { success: false, error: 'TUN уже запущен' }
     }
 
+    // A new start() always reopens the auto-restart window. If a pending
+    // restart timer is still ticking from a crash recovery, cancel it — the
+    // user (or the recovery loop) is taking matters into their own hands.
+    userInitiatedStop = false
+    if (restartTimer) {
+      clearTimeout(restartTimer)
+      restartTimer = null
+    }
+
     const proxyAddr = typeof proxyAddrOrOpts === 'string' ? proxyAddrOrOpts : proxyAddrOrOpts.proxyAddr
     const proxyType: 'socks5' | 'http' =
       typeof proxyAddrOrOpts === 'string' ? 'socks5' : proxyAddrOrOpts.proxyType ?? 'socks5'
@@ -534,7 +586,16 @@ export const tunController = {
         // This fires only when sing-box exits (or UAC is denied).
         const wasRunning = currentStatus.running
         stopProxyWatchdog()
-        currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
+        currentStatus = {
+          running: false,
+          proxyAddr: null,
+          proxyType: null,
+          pid: null,
+          warning: null,
+          proxyReachable: true,
+          startedAt: null,
+          restartAttempt
+        }
         if (!resolved) {
           const msg = error?.message || (stderr ? String(stderr) : 'sing-box не запустился')
           logEvent('error', 'tun', 'sing-box exited before startup completed', { message: msg, stderr })
@@ -564,16 +625,70 @@ export const tunController = {
           rollbackTunNetworkBaselineIfApplied('sing-box exited').catch(err =>
             logEvent('warn', 'tun', 'baseline auto-rollback after sing-box exit failed', err)
           )
+
+          // Decide whether to auto-recover. We only restart if (a) the user
+          // didn't ask for a stop, (b) the autoRestartOnCrash setting is on,
+          // (c) we have memory of the start params, and (d) we haven't burned
+          // through all retries.
+          const settings = settingsStore.get()
+          const canAutoRestart =
+            !userInitiatedStop &&
+            settings.autoRestartOnCrash &&
+            lastStartOptions !== null &&
+            restartAttempt < RESTART_BACKOFF_MS.length
+
+          if (canAutoRestart && lastStartOptions) {
+            const attempt = restartAttempt + 1
+            const delay = RESTART_BACKOFF_MS[restartAttempt]
+            restartAttempt = attempt
+            logEvent('warn', 'tun', 'sing-box crashed — scheduling auto-restart', {
+              attempt,
+              maxAttempts: RESTART_BACKOFF_MS.length,
+              delayMs: delay
+            })
+            notify('warn', 'sing-box упал', `Перезапуск через ${Math.round(delay / 1000)} с (попытка ${attempt}/${RESTART_BACKOFF_MS.length}).`)
+            // Surface the restart attempt to the renderer so the hero card can
+            // say "Перезапускаем защиту…" instead of "Файрвол блокирует".
+            notifyStatus(`restarting:${attempt}/${RESTART_BACKOFF_MS.length}`)
+
+            clearRestartTimers()
+            const optsSnapshot = lastStartOptions
+            restartTimer = setTimeout(() => {
+              restartTimer = null
+              tunController.start(optsSnapshot).then((res) => {
+                if (!res.success) {
+                  logEvent('error', 'tun', 'auto-restart attempt failed', { attempt, error: res.error })
+                  notify('error', 'Не удалось перезапустить защиту', res.error || 'Неизвестная ошибка')
+                  if (killSwitchEngaged) notifyStatus('killswitch-active')
+                  else notifyStatus('stopped')
+                }
+              }).catch((err) => {
+                logEvent('error', 'tun', 'auto-restart attempt threw', err)
+                notify('error', 'Не удалось перезапустить защиту', err?.message || String(err))
+              })
+            }, delay)
+            return
+          }
+
+          if (restartAttempt >= RESTART_BACKOFF_MS.length) {
+            logEvent('error', 'tun', 'auto-restart gave up — too many failures', {
+              attempts: restartAttempt
+            })
+            notify('error', 'Защита остановилась', 'Превышено число попыток перезапуска. Включите защиту вручную.')
+          }
+
           if (killSwitchEngaged) {
             logEvent(
               'warn',
               'tun',
               'sing-box exited unexpectedly — keeping firewall kill-switch active'
             )
+            notify('warn', 'sing-box упал', 'Файрвол блокирует трафик, чтобы не было утечки IP. Включите защиту заново.')
             // Tell the UI traffic is now firewall-blocked, not just "stopped".
             notifyStatus('killswitch-active')
             return
           }
+          notify('warn', 'Защита остановилась', 'sing-box завершил работу.')
           notifyStatus('stopped')
         }
       }
@@ -595,9 +710,51 @@ export const tunController = {
         if (running) {
           clearInterval(poller)
           const combinedWarning = [warning, killSwitchWarning].filter(Boolean).join(' | ') || null
-          currentStatus = { running: true, proxyAddr, proxyType, pid: null, warning: combinedWarning, proxyReachable: true }
+          currentStatus = {
+            running: true,
+            proxyAddr,
+            proxyType,
+            pid: null,
+            warning: combinedWarning,
+            proxyReachable: true,
+            startedAt: Date.now(),
+            restartAttempt
+          }
           startProxyWatchdog(proxyAddr)
-          logEvent('info', 'tun', 'TUN started', { proxyAddr, proxyType, warning: combinedWarning, killSwitch: killSwitchEngaged })
+          logEvent('info', 'tun', 'TUN started', { proxyAddr, proxyType, warning: combinedWarning, killSwitch: killSwitchEngaged, restartAttempt })
+
+          // Remember the start params so we can replay them after a crash.
+          // Mark the run as "user-initiated" while we hold the line —
+          // userInitiatedStop is cleared on success so an unexpected exit
+          // from here on is treated as a crash (and triggers auto-restart).
+          lastStartOptions = {
+            proxyAddr,
+            proxyType,
+            enableFirewallKillSwitch: wantKillSwitch
+          }
+          userInitiatedStop = false
+
+          // If the run survives STABLE_RESET_MS we consider it healthy again
+          // and zero the retry counter. Without this, the user would burn
+          // through all 3 retries across days/weeks of operation.
+          clearRestartTimers()
+          stableTimer = setTimeout(() => {
+            stableTimer = null
+            if (currentStatus.running && restartAttempt > 0) {
+              logEvent('info', 'tun', 'TUN stable — resetting restart attempt counter', {
+                hadAttempts: restartAttempt
+              })
+              restartAttempt = 0
+              currentStatus = { ...currentStatus, restartAttempt: 0 }
+            }
+          }, STABLE_RESET_MS)
+
+          if (restartAttempt > 0) {
+            notify('info', 'Защита восстановлена', `Подключение к VPN-серверу восстановлено после попытки ${restartAttempt}.`)
+          } else if (!combinedWarning) {
+            notify('info', 'Защита включена', 'Весь трафик идёт через VPN.')
+          }
+
           notifyStatus('running')
           finish({ success: true, warning: combinedWarning })
         } else if (attempts >= maxAttempts) {
@@ -623,11 +780,29 @@ export const tunController = {
 
   async stop(): Promise<{ success: boolean; error?: string }> {
     try {
+      // Mark this as a user-initiated stop BEFORE we kill sing-box, so the
+      // exit handler doesn't kick off auto-restart. Also clear any pending
+      // restart timer from a previous crash so we don't fight ourselves.
+      userInitiatedStop = true
+      lastStartOptions = null
+      restartAttempt = 0
+      clearRestartTimers()
+
       stopProxyWatchdog()
       await killOwnedRuntimeProcesses()
 
-      currentStatus = { running: false, proxyAddr: null, proxyType: null, pid: null, warning: null, proxyReachable: true }
+      currentStatus = {
+        running: false,
+        proxyAddr: null,
+        proxyType: null,
+        pid: null,
+        warning: null,
+        proxyReachable: true,
+        startedAt: null,
+        restartAttempt: 0
+      }
       logEvent('info', 'tun', 'TUN stopped')
+      notify('info', 'Защита выключена', 'Трафик идёт по обычному маршруту.')
       notifyStatus('stopped')
 
       // If we modified HKCU/HKLM proxy settings before starting the TUN, restore them now.

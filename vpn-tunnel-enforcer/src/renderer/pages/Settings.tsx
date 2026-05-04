@@ -1,6 +1,41 @@
 import { useAppStore } from '../store'
-import { FolderOpen, Loader2, Save } from 'lucide-react'
-import { useState } from 'react'
+import { Bell, FolderOpen, Loader2, Lock, RefreshCw, Save, Settings2, ShieldCheck, Wand2 } from 'lucide-react'
+import { ReactNode, useState } from 'react'
+
+interface ToggleRowProps {
+  title: ReactNode
+  description: ReactNode
+  checked: boolean
+  onChange: (next: boolean) => void
+  icon?: ReactNode
+}
+
+function ToggleRow({ title, description, checked, onChange, icon }: ToggleRowProps) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex-1">
+        <p className="text-sm text-gray-200 flex items-center gap-2">
+          {icon}
+          {title}
+        </p>
+        <p className="text-xs text-gray-500 mt-1 leading-relaxed">{description}</p>
+      </div>
+      <button
+        onClick={() => onChange(!checked)}
+        className={`flex-shrink-0 w-10 h-6 rounded-full transition-colors duration-200 ${
+          checked ? 'bg-accent' : 'bg-gray-600'
+        }`}
+        aria-pressed={checked}
+      >
+        <div
+          className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
+            checked ? 'translate-x-5' : 'translate-x-1'
+          }`}
+        />
+      </button>
+    </div>
+  )
+}
 
 export function Settings() {
   const settings = useAppStore(s => s.settings)
@@ -48,147 +83,172 @@ export function Settings() {
     }
   }
 
+  const handleResetWizard = async () => {
+    try {
+      const result = await window.electronAPI.saveSettings({ firstRunComplete: false })
+      setSettings(result)
+      addLog('info', 'Мастер первого запуска будет показан при следующем открытии главной.')
+    } catch (err: any) {
+      addLog('error', `Не удалось сбросить мастер: ${err.message}`)
+    }
+  }
+
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
         <h2 className="text-2xl font-bold text-gray-100">Настройки</h2>
-        <p className="text-sm text-gray-400 mt-1">Конфигурация VPN Tunnel Enforcer</p>
+        <p className="text-sm text-gray-400 mt-1">Главные параметры защиты и поведения приложения</p>
       </div>
 
-      {/* Manual proxy override */}
-      <div className="card space-y-4">
-        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Настройка прокси</h3>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1.5">Ручной адрес прокси (переопределяет автоопределение)</label>
-          <input
-            type="text"
-            value={settings.proxyOverride}
-            onChange={e => updateSettings({ proxyOverride: e.target.value })}
-            placeholder="напр. 127.0.0.1:2080"
-            className="w-full bg-surface border border-surface-lighter/50 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent/50 transition-colors"
-          />
-          <p className="text-xs text-gray-600 mt-1">Оставьте пустым для автоопределения прокси Happ</p>
-        </div>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1.5">Тип прокси для ручного адреса</label>
-          <select
-            value={settings.proxyType}
-            onChange={e => updateSettings({ proxyType: e.target.value === 'http' ? 'http' : 'socks5' })}
-            className="w-40 bg-surface border border-surface-lighter/50 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent/50 transition-colors"
-          >
-            <option value="socks5">SOCKS5</option>
-            <option value="http">HTTP</option>
-          </select>
-        </div>
+      {/* Section: Защита — самые важные параметры безопасности. */}
+      <div className="card space-y-5">
+        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-success" />
+          Защита
+        </h3>
+
+        <ToggleRow
+          icon={<Lock className="w-4 h-4 text-success" />}
+          title={<>Файрвол kill-switch <span className="text-success">(рекомендуется)</span></>}
+          description={
+            <>
+              Если sing-box упадёт или будет убит, правила Windows Firewall не дадут трафику утечь
+              мимо VPN. sing-box и локальная сеть (принтеры, NAS) разрешены явно. Снимается при
+              штатной остановке защиты или закрытии приложения.
+            </>
+          }
+          checked={settings.firewallKillSwitch}
+          onChange={(next) => updateSettings({ firewallKillSwitch: next })}
+        />
+
+        <ToggleRow
+          icon={<RefreshCw className="w-4 h-4 text-accent" />}
+          title="Авто-перезапуск sing-box при крахе"
+          description="Если процесс sing-box внезапно упадёт, попробуем перезапустить до 3 раз с экспоненциальной паузой. Большинство случаев временных сбоев лечатся именно этим."
+          checked={settings.autoRestartOnCrash}
+          onChange={(next) => updateSettings({ autoRestartOnCrash: next })}
+        />
+
+        <ToggleRow
+          icon={<Bell className="w-4 h-4 text-accent" />}
+          title="Уведомления Windows"
+          description="Показывать toast при включении защиты, падении sing-box, утечке IP. Удобно если приложение свернуто в трей."
+          checked={settings.desktopNotifications}
+          onChange={(next) => updateSettings({ desktopNotifications: next })}
+        />
       </div>
 
-      {/* IP monitoring */}
-      <div className="card space-y-4">
-        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Мониторинг IP</h3>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1.5">Интервал проверки (секунды)</label>
-          <input
-            type="number"
-            value={settings.checkInterval / 1000}
-            onChange={e => updateSettings({ checkInterval: Math.max(5, parseInt(e.target.value) || 30) * 1000 })}
-            min={5}
-            max={300}
-            className="w-32 bg-surface border border-surface-lighter/50 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent/50 transition-colors"
-          />
-        </div>
+      {/* Section: Поведение приложения */}
+      <div className="card space-y-5">
+        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Поведение</h3>
+
+        <ToggleRow
+          title="Автозапуск с Windows"
+          description="Запускать приложение при входе в систему."
+          checked={settings.autoStart}
+          onChange={(next) => updateSettings({ autoStart: next })}
+        />
+
+        <ToggleRow
+          title="Сворачивать в трей при закрытии"
+          description="Кнопка X сворачивает в трей вместо выхода. Защита продолжает работать в фоне."
+          checked={settings.minimizeToTray}
+          onChange={(next) => updateSettings({ minimizeToTray: next })}
+        />
+
+        <ToggleRow
+          title="Автопилот маршрута"
+          description="При запуске сам решает: оставить как есть (если уже работает внешний VPN) или включить TUN. Если выключен — придётся запускать защиту вручную."
+          checked={settings.autoPilotEnabled}
+          onChange={(next) => updateSettings({ autoPilotEnabled: next })}
+        />
       </div>
 
-      {/* System */}
-      <div className="card space-y-4">
-        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Система</h3>
-        <div className="flex items-center justify-between">
+      {/* Section: Расширенный режим */}
+      <div className="card space-y-5">
+        <ToggleRow
+          icon={<Settings2 className="w-4 h-4 text-warning" />}
+          title={<>Расширенный режим <span className="text-warning">(для опытных)</span></>}
+          description="Открывает страницы Приложения и Диагностика, разрешает менять ручной адрес прокси и потенциально опасные параметры (сброс системных proxy-настроек, починка Microsoft Store)."
+          checked={settings.advancedMode}
+          onChange={(next) => updateSettings({ advancedMode: next })}
+        />
+
+        <ToggleRow
+          icon={<Wand2 className="w-4 h-4 text-accent" />}
+          title="Показывать мастер первого запуска"
+          description="Снимите галочку чтобы скрыть мастер. Включите чтобы запустить его снова при следующем открытии."
+          checked={!settings.firstRunComplete}
+          onChange={(next) => {
+            if (next) {
+              void handleResetWizard()
+            } else {
+              updateSettings({ firstRunComplete: true })
+            }
+          }}
+        />
+      </div>
+
+      {/* Section: Расширенные параметры — видны только если advancedMode включён */}
+      {settings.advancedMode && (
+        <div className="card space-y-5 border-warning/30">
+          <h3 className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-warning">
+            <Settings2 className="w-4 h-4" />
+            Расширенные параметры
+          </h3>
+
           <div>
-            <p className="text-sm text-gray-200">Автозапуск с Windows</p>
-            <p className="text-xs text-gray-500">Запускать при входе в систему</p>
-          </div>
-          <button
-            onClick={() => updateSettings({ autoStart: !settings.autoStart })}
-            className={`w-10 h-6 rounded-full transition-colors duration-200 ${
-              settings.autoStart ? 'bg-accent' : 'bg-gray-600'
-            }`}
-          >
-            <div className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
-              settings.autoStart ? 'translate-x-5' : 'translate-x-1'
-            }`} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-gray-200">Автопилот маршрута</p>
-            <p className="text-xs text-gray-500">Сам выбирает: внешний VPN, приложения или один Hard TUN</p>
-          </div>
-          <button
-            onClick={() => updateSettings({ autoPilotEnabled: !settings.autoPilotEnabled })}
-            className={`w-10 h-6 rounded-full transition-colors duration-200 ${
-              settings.autoPilotEnabled ? 'bg-accent' : 'bg-gray-600'
-            }`}
-          >
-            <div className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
-              settings.autoPilotEnabled ? 'translate-x-5' : 'translate-x-1'
-            }`} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-gray-200">Сворачивать в трей при закрытии</p>
-            <p className="text-xs text-gray-500">Продолжать работу в фоне</p>
-          </div>
-          <button
-            onClick={() => updateSettings({ minimizeToTray: !settings.minimizeToTray })}
-            className={`w-10 h-6 rounded-full transition-colors duration-200 ${
-              settings.minimizeToTray ? 'bg-accent' : 'bg-gray-600'
-            }`}
-          >
-            <div className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
-              settings.minimizeToTray ? 'translate-x-5' : 'translate-x-1'
-            }`} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-gray-200">Авто baseline сети для TUN <span className="text-warning">(агрессивно)</span></p>
-            <p className="text-xs text-gray-500">
-              Перед Hard mode сбрасывать WinHTTP/User/PAC/env proxy с backup. По умолчанию выключено: TUN ловит трафик и без этого.
-              Откатывается автоматически при остановке TUN, выходе из приложения и при крахе.
+            <label className="block text-xs text-gray-400 mb-1.5">Ручной адрес прокси</label>
+            <input
+              type="text"
+              value={settings.proxyOverride}
+              onChange={e => updateSettings({ proxyOverride: e.target.value })}
+              placeholder="например, 127.0.0.1:2080"
+              className="w-full bg-surface border border-surface-lighter/50 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent/50 transition-colors"
+            />
+            <p className="text-xs text-gray-600 mt-1">
+              Переопределяет автоопределение Happ. Оставьте пустым для автопоиска.
             </p>
           </div>
-          <button
-            onClick={() => updateSettings({ autoNetworkBaseline: !settings.autoNetworkBaseline })}
-            className={`w-10 h-6 rounded-full transition-colors duration-200 ${
-              settings.autoNetworkBaseline ? 'bg-accent' : 'bg-gray-600'
-            }`}
-          >
-            <div className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
-              settings.autoNetworkBaseline ? 'translate-x-5' : 'translate-x-1'
-            }`} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between">
+
           <div>
-            <p className="text-sm text-gray-200">Firewall kill-switch <span className="text-success">(рекомендуется)</span></p>
-            <p className="text-xs text-gray-500">
-              Перед стартом TUN ставит правила Windows Firewall, которые блокируют исходящий трафик на физических адаптерах.
-              sing-box и локальная сеть (LAN/принтеры/NAS) разрешены явно. Если sing-box упадёт или его убьёт антивирус,
-              правила остаются — трафик не утечёт мимо VPN. Снимаются при штатной остановке TUN или выходе.
-            </p>
+            <label className="block text-xs text-gray-400 mb-1.5">Тип прокси для ручного адреса</label>
+            <select
+              value={settings.proxyType}
+              onChange={e => updateSettings({ proxyType: e.target.value === 'http' ? 'http' : 'socks5' })}
+              className="w-40 bg-surface border border-surface-lighter/50 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent/50 transition-colors"
+            >
+              <option value="socks5">SOCKS5</option>
+              <option value="http">HTTP</option>
+            </select>
           </div>
-          <button
-            onClick={() => updateSettings({ firewallKillSwitch: !settings.firewallKillSwitch })}
-            className={`w-10 h-6 rounded-full transition-colors duration-200 ${
-              settings.firewallKillSwitch ? 'bg-accent' : 'bg-gray-600'
-            }`}
-          >
-            <div className={`w-4 h-4 bg-white rounded-full mt-1 transition-transform duration-200 ${
-              settings.firewallKillSwitch ? 'translate-x-5' : 'translate-x-1'
-            }`} />
-          </button>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Интервал проверки IP (секунды)</label>
+            <input
+              type="number"
+              value={settings.checkInterval / 1000}
+              onChange={e => updateSettings({ checkInterval: Math.max(5, parseInt(e.target.value) || 30) * 1000 })}
+              min={5}
+              max={300}
+              className="w-32 bg-surface border border-surface-lighter/50 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent/50 transition-colors"
+            />
+          </div>
+
+          <ToggleRow
+            title={<>Авто baseline сети для TUN <span className="text-warning">(агрессивно)</span></>}
+            description={
+              <>
+                Перед Hard mode сбрасывает WinHTTP/User/PAC/env proxy с резервной копией. По умолчанию
+                выключено: TUN ловит трафик и без этого. Откатывается автоматически при остановке защиты,
+                выходе из приложения и при крахе. Полезно только если есть проблемы с UWP/Microsoft Store.
+              </>
+            }
+            checked={settings.autoNetworkBaseline}
+            onChange={(next) => updateSettings({ autoNetworkBaseline: next })}
+          />
         </div>
-      </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <button onClick={handleSave} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
@@ -197,7 +257,7 @@ export function Settings() {
         </button>
         <button onClick={handleOpenLogs} disabled={openingLogs} className="btn-secondary flex items-center gap-2 disabled:opacity-50">
           {openingLogs ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderOpen className="w-4 h-4" />}
-          Логи TUN
+          Открыть папку логов
         </button>
       </div>
     </div>

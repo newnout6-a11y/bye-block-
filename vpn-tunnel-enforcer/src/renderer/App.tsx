@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useAppStore } from './store'
 import { Sidebar } from './components/Sidebar'
+import { FirstRunWizard } from './components/FirstRunWizard'
 import { Dashboard } from './pages/Dashboard'
 import { Apps } from './pages/Apps'
 import { Settings } from './pages/Settings'
@@ -84,10 +85,14 @@ export default function App() {
       const tunUp = status === 'running' || status === 'proxy-down'
       store.setTunRunning(tunUp)
       if (!tunUp && store.mode === 'hard') store.setMode('off')
-      if (status === 'proxy-down') {
-        addLog('warn', 'Upstream proxy не отвечает — трафик заблокирован в TUN (kill-switch)')
+      if (status === 'running') {
+        addLog('info', 'Защита включена — весь трафик идёт через VPN.')
+      } else if (status === 'stopped') {
+        addLog('info', 'Защита выключена. Трафик идёт по обычному маршруту.')
+      } else if (status === 'proxy-down') {
+        addLog('warn', 'VPN-сервер не отвечает — трафик заблокирован для безопасности. Проверьте ваш VPN-клиент (Happ).')
       } else if (status === 'killswitch-active') {
-        addLog('error', 'sing-box упал — файрвол kill-switch блокирует весь исходящий трафик')
+        addLog('error', 'sing-box упал. Файрвол блокирует весь трафик, пока вы не перезапустите защиту.')
       } else {
         addLog('info', `Статус TUN: ${status}`)
       }
@@ -203,13 +208,35 @@ export default function App() {
     init()
   }, [])
 
+  const settings = useAppStore(s => s.settings)
+  const updateSettings = useAppStore(s => s.updateSettings)
+  // Force-redirect away from advanced-only pages if the user disables advancedMode
+  // while sitting on one of them.
+  useEffect(() => {
+    if (!settings.advancedMode && (page === 'apps' || page === 'maintenance')) {
+      setPage('dashboard')
+    }
+  }, [settings.advancedMode, page])
+
   const renderPage = () => {
     switch (page) {
       case 'dashboard': return <Dashboard />
-      case 'apps': return <Apps />
-      case 'maintenance': return <Maintenance />
+      case 'apps':
+        return settings.advancedMode ? <Apps /> : <Dashboard />
+      case 'maintenance':
+        return settings.advancedMode ? <Maintenance /> : <Dashboard />
       case 'settings': return <Settings />
       case 'logs': return <Logs />
+    }
+  }
+
+  const handleWizardComplete = async () => {
+    try {
+      const saved = await window.electronAPI.saveSettings({ firstRunComplete: true })
+      useAppStore.getState().setSettings(saved)
+    } catch (err: any) {
+      addLog('error', `Не удалось сохранить настройки: ${err.message}`)
+      updateSettings({ firstRunComplete: true })
     }
   }
 
@@ -219,6 +246,9 @@ export default function App() {
       <main className="flex-1 overflow-y-auto p-6">
         {renderPage()}
       </main>
+      {!settings.firstRunComplete && (
+        <FirstRunWizard onComplete={handleWizardComplete} onSkip={handleWizardComplete} />
+      )}
     </div>
   )
 }

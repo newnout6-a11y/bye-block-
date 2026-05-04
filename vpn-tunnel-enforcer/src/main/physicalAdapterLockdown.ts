@@ -109,14 +109,21 @@ async function runPS(script: string, timeoutMs = 30000): Promise<string> {
  * normalize that on the JS side.
  */
 async function snapshotPhysicalAdapters(): Promise<AdapterSnapshot[]> {
+  // We DON'T filter by HardwareInterface=$true because some real Wi-Fi
+  // adapters (especially on laptops with funky drivers) report it as $false
+  // and we'd otherwise skip them and leak. Instead we filter by adapter
+  // description against the known virtual/loopback families. If a real
+  // adapter has a description matching one of those, we want it skipped
+  // anyway. We additionally require a physical MAC address (LinkLayerAddress
+  // present and not all-zeros) to dodge purely-software adapters.
   const script = `
 $ErrorActionPreference = 'SilentlyContinue'
 $rows = @()
 $adapters = Get-NetAdapter |
   Where-Object {
     $_.Status -eq 'Up' -and
-    $_.HardwareInterface -eq $true -and
-    $_.InterfaceDescription -notmatch 'Wintun|TAP-Windows|Tailscale|WireGuard|Hyper-V|Loopback|vEthernet'
+    $_.InterfaceDescription -notmatch 'Wintun|TAP-Windows|Tailscale|WireGuard|Hyper-V|Loopback|vEthernet|VPN|VirtualBox|VMware|Bluetooth' -and
+    $_.MacAddress -and $_.MacAddress -ne '00-00-00-00-00-00'
   }
 foreach ($a in $adapters) {
   $bind6 = Get-NetAdapterBinding -InterfaceAlias $a.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue

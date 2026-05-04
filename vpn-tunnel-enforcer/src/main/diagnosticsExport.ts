@@ -116,6 +116,26 @@ export async function exportDiagnosticsZip(): Promise<ExportResult> {
     const userData = app.getPath('userData')
     await copyIfExists(join(userData, 'latest-tun-network-baseline.json'), join(stage, 'baseline-manifest.json'))
     await copyIfExists(join(userData, 'latest-firewall-killswitch.json'), join(stage, 'killswitch-manifest.json'))
+    await copyIfExists(join(userData, 'latest-physical-adapter-lockdown.json'), join(stage, 'adapter-lockdown-manifest.json'))
+
+    // 6b. Snapshots dir — every captured network/system snapshot from app
+    // start, every TUN start/stop, periodic 60s captures, and any
+    // leak-detected event. This is the bulk of the support-relevant data.
+    const snapshotsDir = join(userData, 'snapshots')
+    if (existsSync(snapshotsDir)) {
+      try {
+        const stagedSnaps = join(stage, 'snapshots')
+        await import('fs/promises').then((fp) => fp.mkdir(stagedSnaps, { recursive: true }))
+        const entries = await readdir(snapshotsDir)
+        for (const name of entries) {
+          if (/\.json$/i.test(name)) {
+            await copyIfExists(join(snapshotsDir, name), join(stagedSnaps, name))
+          }
+        }
+      } catch (err) {
+        logEvent('warn', 'diag-export', 'failed to copy snapshots', { err: (err as Error)?.message })
+      }
+    }
 
     // 7. README so the user/support knows what's inside.
     const readme = `Диагностика VPN Tunnel Enforcer
@@ -129,6 +149,9 @@ export async function exportDiagnosticsZip(): Promise<ExportResult> {
   runtime-*.json/log         — конфиг и логи sing-box
   baseline-manifest.json     — что было изменено в proxy-настройках Windows (если применялось)
   killswitch-manifest.json   — установленные правила Windows Firewall (если применялись)
+  adapter-lockdown-manifest.json — что было изменено на физических адаптерах (IPv6/DNS), если применялось
+  snapshots/                 — снимки сетевого состояния (адаптеры/маршруты/DNS/firewall) на каждом важном
+                               событии (старт app, пред-/пост-старт TUN, краш sing-box, утечка, периодика 60с)
 
 Файл предназначен для отправки в поддержку.
 `

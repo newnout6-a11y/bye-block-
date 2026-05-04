@@ -1,4 +1,5 @@
 import { HeroStatus } from '../components/HeroStatus'
+import { DiagnosticsCard } from '../components/DiagnosticsCard'
 import { useAppStore } from '../store'
 import { CheckCircle2, Info, Loader2, Lock, Radar, ShieldOff, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
@@ -151,6 +152,11 @@ export function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* The "if anything goes wrong, click here" surface. Active leak self-test
+          + one-click send-logs ZIP. This is what the user reaches for instead
+          of asking us "почему не работает". */}
+      <DiagnosticsCard />
     </div>
   )
 }

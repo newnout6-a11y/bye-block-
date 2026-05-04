@@ -34,6 +34,8 @@ import { getRoutingPlan } from './connectionPlanner'
 import { runAutoPilot } from './autoPilot'
 import { notify } from './notifications'
 import { exportDiagnosticsZip } from './diagnosticsExport'
+import { captureSnapshot, getSnapshotsDir, startPeriodicSnapshots, stopPeriodicSnapshots } from './systemSnapshot'
+import { runLeakSelfTest, startPeriodicLeakTest, stopPeriodicLeakTest, setLeakDetectedCallback } from './leakSelfTest'
 
 const exec = promisify(execCb)
 
@@ -252,6 +254,23 @@ app.whenReady().then(async () => {
   createWindow()
   tray = createTray(mainWindow!)
 
+  // Capture a snapshot of the system state on every app launch — gives us a
+  // "what does the network look like before the user clicks anything" record
+  // for free, in case they later report "doesn't work" without ever clicking.
+  captureSnapshot('app-start').catch(() => undefined)
+
+  // When the periodic leak self-test (started at TUN start) detects a leak,
+  // bubble that to the renderer so the UI can show a giant red banner, AND
+  // fire a Windows toast.
+  setLeakDetectedCallback((r) => {
+    try {
+      mainWindow?.webContents.send('leak-detected', r)
+    } catch {}
+    try {
+      notify('warn', 'УТЕЧКА обнаружена', r.summary)
+    } catch {}
+  })
+
   // IPC handlers
   handleLogged('detect-happ', async () => {
     return happDetector.detect()
@@ -262,6 +281,10 @@ app.whenReady().then(async () => {
   })
 
   handleLogged('start-tun', async (_e, proxyAddr: string, proxyType?: 'socks5' | 'http') => {
+    // Snapshot BEFORE we change anything. This is the baseline state that
+    // support/diagnostics will compare against.
+    captureSnapshot('tun-pre-start').catch(() => undefined)
+
     const plan = await getRoutingPlan()
     if (!plan.canStartHard) {
       return {
@@ -291,12 +314,21 @@ app.whenReady().then(async () => {
       await rollbackTunNetworkBaselineIfApplied('start-tun failed').catch(err =>
         logEvent('warn', 'app', 'rollback after start-tun failure failed', err)
       )
+      captureSnapshot('tun-start-failed').catch(() => undefined)
       return result
     }
 
     const ipInfo = await ipMonitor.getCurrentIp()
     if (ipInfo.ip) ipMonitor.setVpnIp(ipInfo.ip)
     if (tray) updateTrayIcon(tray, 'protected')
+
+    // Snapshot AFTER everything is applied (TUN up, kill-switch up,
+    // adapter lockdown up). Then start the periodic snapshot timer +
+    // periodic leak self-test so we keep collecting data for support.
+    captureSnapshot('tun-post-start').catch(() => undefined)
+    startPeriodicSnapshots(60_000)
+    startPeriodicLeakTest(120_000)
+
     return {
       ...result,
       warning: [baselineWarning, result.warning].filter(Boolean).join(' | ') || null,
@@ -305,9 +337,12 @@ app.whenReady().then(async () => {
   })
 
   handleLogged('stop-tun', async () => {
+    stopPeriodicSnapshots()
+    stopPeriodicLeakTest()
     const result = await tunController.stop()
     ipMonitor.clearVpnIp()
     if (tray) updateTrayIcon(tray, 'off')
+    captureSnapshot('tun-post-stop').catch(() => undefined)
     return result
   })
 
@@ -433,7 +468,37 @@ app.whenReady().then(async () => {
   })
 
   handleLogged('export-diagnostics', async () => {
+    // User-driven export. Take a fresh snapshot first so it's the most
+    // recent thing in the ZIP — then call the existing exporter.
+    await captureSnapshot('manual').catch(() => undefined)
     return exportDiagnosticsZip()
+  })
+
+  handleLogged('run-leak-self-test', async () => {
+    const result = await runLeakSelfTest()
+    if (result.physicalAdapterReached || result.publicIpMismatch) {
+      // Always snapshot when we see a leak — that's exactly the moment we
+      // want frozen for support.
+      captureSnapshot('leak-detected').catch(() => undefined)
+    }
+    return result
+  })
+
+  handleLogged('open-snapshots-folder', async () => {
+    const dir = getSnapshotsDir()
+    try {
+      // Ensure the directory exists before opening — on first launch the user
+      // might click this before any snapshot has been written.
+      const { mkdir } = await import('fs/promises')
+      await mkdir(dir, { recursive: true })
+      const { shell } = await import('electron')
+      const result = await shell.openPath(dir)
+      // openPath returns '' on success, error message on failure.
+      if (result) return { success: false, error: result, path: dir }
+      return { success: true, path: dir }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
   })
 
   // Push events from main → renderer

@@ -588,9 +588,20 @@ export const tunController = {
     // split-default IPv6 routes). Reverted on stop (and on crash recovery).
     let adapterLockdownEngaged = false
     let adapterLockdownWarning: string | null = null
+    logEvent('info', 'tun', 'adapter lockdown decision', {
+      wantAdapterLockdown,
+      reason: wantAdapterLockdown
+        ? 'strictAdapterLockdown is ON in settings — will apply'
+        : 'strictAdapterLockdown is OFF in settings — will not apply'
+    })
     if (wantAdapterLockdown) {
       try {
         const lock = await applyPhysicalAdapterLockdown('172.19.0.2')
+        logEvent('info', 'tun', 'adapter lockdown result', {
+          applied: lock.applied,
+          adapters: lock.adapters,
+          warnings: lock.warnings
+        })
         if (lock.applied) {
           adapterLockdownEngaged = true
           if (lock.warnings.length > 0) {

@@ -42,10 +42,30 @@ declare global {
       openTunLogFolder: () => Promise<string>
       openLogFolder: () => Promise<string>
       exportDiagnostics: () => Promise<{ success: boolean; path?: string; error?: string; cancelled?: boolean }>
+      runLeakSelfTest: () => Promise<LeakSelfTestResult>
+      openSnapshotsFolder: () => Promise<{ success: boolean; path?: string; error?: string }>
       onIpChanged: (callback: (data: { ip: string; isLeak: boolean }) => void) => () => void
       onTunStatusChanged: (callback: (status: string) => void) => () => void
+      onLeakDetected: (callback: (result: LeakSelfTestResult) => void) => () => void
+      onMainError: (callback: (data: { code: string; message: string }) => void) => () => void
     }
   }
+}
+
+export interface LeakSelfTestAdapter {
+  alias: string
+  ipv4: string | null
+  publicIpViaThisAdapter: string | null
+  curlExitCode: number | null
+  curlStderrTail: string | null
+}
+export interface LeakSelfTestResult {
+  ts: number
+  physicalAdapterReached: boolean
+  publicIpMismatch: boolean
+  defaultRoutePublicIp: string | null
+  perAdapter: LeakSelfTestAdapter[]
+  summary: string
 }
 
 type Page = 'dashboard' | 'apps' | 'maintenance' | 'settings' | 'logs'
@@ -115,9 +135,23 @@ export default function App() {
         .catch(() => undefined)
     })
 
+    const unsubLeak = window.electronAPI.onLeakDetected((result) => {
+      const store = useAppStore.getState()
+      store.setLeakSelfTestResult(result)
+      addLog('error', `УТЕЧКА: ${result.summary}`)
+    })
+
+    const unsubMainErr = window.electronAPI.onMainError(({ code, message }) => {
+      const store = useAppStore.getState()
+      store.setLastMainError({ code, message, ts: Date.now() })
+      addLog('error', `Ошибка main-процесса (поймана хэндлером, app не упал): ${code} — ${message}`)
+    })
+
     return () => {
       unsubIp()
       unsubTun()
+      unsubLeak()
+      unsubMainErr()
     }
   }, [addLog])
 

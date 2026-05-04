@@ -43,6 +43,10 @@ export interface AppSettings {
   locationPrivacyEnabled: boolean
   autoNetworkBaseline: boolean
   firewallKillSwitch: boolean
+  advancedMode: boolean
+  firstRunComplete: boolean
+  autoRestartOnCrash: boolean
+  desktopNotifications: boolean
 }
 
 export interface LeakCheckItem {
@@ -131,8 +135,12 @@ export const useAppStore = create<AppState>((set) => ({
     autoPilotEnabled: true,
     minimizeToTray: true,
     locationPrivacyEnabled: false,
-    autoNetworkBaseline: true,
-    firewallKillSwitch: true
+    autoNetworkBaseline: false,
+    firewallKillSwitch: true,
+    advancedMode: false,
+    firstRunComplete: false,
+    autoRestartOnCrash: true,
+    desktopNotifications: true
   },
 
   setMode: (mode) => set({ mode }),
